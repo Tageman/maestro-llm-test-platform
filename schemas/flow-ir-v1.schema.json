@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.maestro-test-platform/schemas/flow-ir-v1.schema.json",
+  "title": "Maestro Flow IR V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "flow_id",
+    "flow_kind",
+    "app_id",
+    "name",
+    "tags",
+    "properties",
+    "commands",
+    "generation_context"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "flow_id": { "type": "string", "minLength": 1 },
+    "flow_kind": { "enum": ["case", "fixture"] },
+    "app_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "properties": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    },
+    "generation_context": { "$ref": "#/$defs/generationContext" }
+  },
+  "$defs": {
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "entity_id", "field", "ordinal", "text"],
+      "properties": {
+        "entity_type": { "enum": ["case", "fixture"] },
+        "entity_id": { "type": "string", "minLength": 1 },
+        "field": { "enum": ["steps", "expected_results"] },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "value"],
+      "properties": {
+        "strategy": {
+          "enum": ["text", "resource_id", "content_description"]
+        },
+        "value": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "generationContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt_version", "model", "generated_at"],
+      "properties": {
+        "prompt_version": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "baseCommandProperties": {
+      "type": "object",
+      "required": ["source_ref"],
+      "properties": {
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" }
+      }
+    },
+    "command": {
+      "oneOf": [
+        { "$ref": "#/$defs/launchApp" },
+        { "$ref": "#/$defs/clearState" },
+        { "$ref": "#/$defs/tapOn" },
+        { "$ref": "#/$defs/inputText" },
+        { "$ref": "#/$defs/eraseText" },
+        { "$ref": "#/$defs/assertVisible" },
+        { "$ref": "#/$defs/assertNotVisible" },
+        { "$ref": "#/$defs/scrollUntilVisible" },
+        { "$ref": "#/$defs/swipe" },
+        { "$ref": "#/$defs/back" },
+        { "$ref": "#/$defs/hideKeyboard" },
+        { "$ref": "#/$defs/waitForAnimation" },
+        { "$ref": "#/$defs/runFlow" },
+        { "$ref": "#/$defs/takeScreenshot" }
+      ]
+    },
+    "launchApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "clear_state"],
+      "properties": {
+        "type": { "const": "launch_app" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "clear_state": { "type": "boolean" },
+        "stop_app": { "type": "boolean", "default": true }
+      }
+    },
+    "clearState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref"],
+      "properties": {
+        "type": { "const": "clear_state" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" }
+      }
+    },
+    "tapOn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "selector"],
+      "properties": {
+        "type": { "const": "tap_on" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "selector": { "$ref": "#/$defs/selector" }
+      }
+    },
+    "inputText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "text"],
+      "properties": {
+        "type": { "const": "input_text" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "text": { "type": "string" }
+      }
+    },
+    "eraseText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref"],
+      "properties": {
+        "type": { "const": "erase_text" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "characters": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "assertVisible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "selector", "assertion"],
+      "properties": {
+        "type": { "const": "assert_visible" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "assertion": { "const": true }
+      }
+    },
+    "assertNotVisible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "selector", "assertion"],
+      "properties": {
+        "type": { "const": "assert_not_visible" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "assertion": { "const": true }
+      }
+    },
+    "scrollUntilVisible": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "selector", "direction"],
+      "properties": {
+        "type": { "const": "scroll_until_visible" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "selector": { "$ref": "#/$defs/selector" },
+        "direction": { "enum": ["up", "down", "left", "right"] },
+        "timeout_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "swipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "direction"],
+      "properties": {
+        "type": { "const": "swipe" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "direction": { "enum": ["up", "down", "left", "right"] },
+        "duration_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "back": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref"],
+      "properties": {
+        "type": { "const": "back" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" }
+      }
+    },
+    "hideKeyboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref"],
+      "properties": {
+        "type": { "const": "hide_keyboard" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" }
+      }
+    },
+    "waitForAnimation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref"],
+      "properties": {
+        "type": { "const": "wait_for_animation" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "timeout_ms": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "runFlow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "flow_id"],
+      "properties": {
+        "type": { "const": "run_flow" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "flow_id": { "type": "string", "minLength": 1 },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "takeScreenshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "source_ref", "name"],
+      "properties": {
+        "type": { "const": "take_screenshot" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "label": { "type": "string" },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        }
+      }
+    }
+  }
+}

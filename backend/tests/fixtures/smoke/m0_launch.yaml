@@ -1,0 +1,11 @@
+appId: aippt.com.mm
+name: M0 Device Launch Probe
+tags:
+  - m0
+  - environment
+properties:
+  testCaseId: M0-LAUNCH-PROBE
+---
+- launchApp:
+    stopApp: true
+    clearState: false

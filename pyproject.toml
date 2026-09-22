@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maestro-llm-test-platform"
+version = "0.1.0"
+description = "Local Android automation platform using Maestro, pytest, and an LLM."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.134,<1",
+  "openpyxl>=3.1,<4",
+  "pydantic>=2.12,<3",
+  "python-multipart>=0.0.20,<1",
+  "PyYAML>=6.0,<7",
+  "uvicorn>=0.41,<1",
+]
+
+[project.scripts]
+maestro-app-m0-verify = "maestro_app.cli.m0_verify:main"
+maestro-app-m1-verify = "maestro_app.cli.m1_verify:main"
+maestro-app-m2-verify = "maestro_app.cli.m2_verify:main"
+maestro-app-m3-verify = "maestro_app.cli.m3_verify:main"
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+]
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend/src", "backend/tests"]
+testpaths = ["backend/tests"]
+addopts = "-q"

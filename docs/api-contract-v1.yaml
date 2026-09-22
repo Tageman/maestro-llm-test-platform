@@ -1,0 +1,736 @@
+openapi: 3.1.0
+info:
+  title: Maestro LLM Test Platform API
+  version: 1.0.0
+  description: Frozen V1 contract for the local Android automation platform.
+servers:
+  - url: http://127.0.0.1:8000
+    description: Local backend
+tags:
+  - name: System
+  - name: Workbooks
+  - name: Generations
+  - name: Runs
+paths:
+  /api/v1/health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /api/v1/system/capabilities:
+    get:
+      tags: [System]
+      operationId: getSystemCapabilities
+      responses:
+        "200":
+          description: Local tool and device capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilityReport"
+  /api/v1/schema/flow-ir:
+    get:
+      tags: [System]
+      operationId: getFlowIrSchema
+      responses:
+        "200":
+          description: Frozen Flow IR V1 JSON Schema
+          content:
+            application/schema+json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/workbooks:
+    post:
+      tags: [Workbooks]
+      operationId: uploadWorkbook
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "202":
+          description: Workbook snapshot accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkbookSummary"
+        "422":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/workbooks/{workbook_id}:
+    parameters:
+      - $ref: "#/components/parameters/WorkbookId"
+    get:
+      tags: [Workbooks]
+      operationId: getWorkbook
+      responses:
+        "200":
+          description: Parsed workbook summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkbookSummary"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/workbooks/{workbook_id}/validation:
+    parameters:
+      - $ref: "#/components/parameters/WorkbookId"
+    get:
+      tags: [Workbooks]
+      operationId: getWorkbookValidation
+      responses:
+        "200":
+          description: Validation issues
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workbook_id, valid, issues]
+                properties:
+                  workbook_id:
+                    type: string
+                  valid:
+                    type: boolean
+                  issues:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ValidationIssue"
+  /api/v1/generations:
+    post:
+      tags: [Generations]
+      operationId: createGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGenerationRequest"
+      responses:
+        "202":
+          description: Generation started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerationSummary"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/generations/{generation_id}:
+    parameters:
+      - $ref: "#/components/parameters/GenerationId"
+    get:
+      tags: [Generations]
+      operationId: getGeneration
+      responses:
+        "200":
+          description: Generation summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerationSummary"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/generations/{generation_id}/flows/{flow_id}:
+    parameters:
+      - $ref: "#/components/parameters/GenerationId"
+      - $ref: "#/components/parameters/FlowId"
+    get:
+      tags: [Generations]
+      operationId: getGeneratedFlow
+      responses:
+        "200":
+          description: Generated flow preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneratedFlowDetail"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/generations/{generation_id}/approval:
+    parameters:
+      - $ref: "#/components/parameters/GenerationId"
+    post:
+      tags: [Generations]
+      operationId: approveGeneration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "200":
+          description: Approval recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerationSummary"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs:
+    post:
+      tags: [Runs]
+      operationId: createRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "202":
+          description: Run created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs/{run_id}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [Runs]
+      operationId: getRun
+      responses:
+        "200":
+          description: Run summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs/{run_id}/events:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+      - name: Last-Event-ID
+        in: header
+        required: false
+        schema:
+          type: string
+    get:
+      tags: [Runs]
+      operationId: streamRunEvents
+      responses:
+        "200":
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /api/v1/runs/{run_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    post:
+      tags: [Runs]
+      operationId: cancelRun
+      responses:
+        "202":
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSummary"
+        "409":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs/{run_id}/cases/{case_id}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+      - $ref: "#/components/parameters/CaseId"
+    get:
+      tags: [Runs]
+      operationId: getCaseRun
+      responses:
+        "200":
+          description: Case run details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaseRunDetail"
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs/{run_id}/artifacts/{artifact_id}:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+      - $ref: "#/components/parameters/ArtifactId"
+    get:
+      tags: [Runs]
+      operationId: downloadArtifact
+      responses:
+        "200":
+          description: Artifact bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+  /api/v1/runs/{run_id}/result-workbook:
+    parameters:
+      - $ref: "#/components/parameters/RunId"
+    get:
+      tags: [Runs]
+      operationId: downloadResultWorkbook
+      responses:
+        "200":
+          description: Result workbook
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/ProblemResponse"
+components:
+  parameters:
+    WorkbookId:
+      name: workbook_id
+      in: path
+      required: true
+      schema: { type: string }
+    GenerationId:
+      name: generation_id
+      in: path
+      required: true
+      schema: { type: string }
+    FlowId:
+      name: flow_id
+      in: path
+      required: true
+      schema: { type: string }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string }
+    CaseId:
+      name: case_id
+      in: path
+      required: true
+      schema: { type: string }
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    ProblemResponse:
+      description: Structured error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, service, version, api_version, time]
+      properties:
+        status: { const: ok }
+        service: { type: string }
+        version: { type: string }
+        api_version: { const: v1 }
+        time: { type: string, format: date-time }
+    ToolCapability:
+      type: object
+      additionalProperties: false
+      required: [name, status, available, detail]
+      properties:
+        name: { type: string }
+        status:
+          enum: [available, unavailable, degraded]
+        available: { type: boolean }
+        version: { type: [string, "null"] }
+        command: { type: [string, "null"] }
+        detail: { type: string }
+    AndroidDevice:
+      type: object
+      additionalProperties: false
+      required: [device_id, state]
+      properties:
+        device_id: { type: string }
+        state: { type: string }
+        selected: { type: boolean, default: false }
+    CapabilityReport:
+      type: object
+      additionalProperties: false
+      required: [overall_status, checked_at, tools, android_devices, avds, app]
+      properties:
+        overall_status:
+          enum: [ready, degraded, unavailable]
+        checked_at: { type: string, format: date-time }
+        tools:
+          type: array
+          items: { $ref: "#/components/schemas/ToolCapability" }
+        android_devices:
+          type: array
+          items: { $ref: "#/components/schemas/AndroidDevice" }
+        avds:
+          type: array
+          items: { type: string }
+        app:
+          type: object
+          additionalProperties: false
+          required: [app_id, installed]
+          properties:
+            app_id: { type: string }
+            installed: { type: boolean }
+            device_id: { type: [string, "null"] }
+    ValidationIssue:
+      type: object
+      additionalProperties: false
+      required: [code, severity, message]
+      properties:
+        code: { type: string }
+        severity: { enum: [error, warning] }
+        message: { type: string }
+        sheet: { type: [string, "null"] }
+        row: { type: [integer, "null"], minimum: 1 }
+        column: { type: [string, "null"] }
+        entity_id: { type: [string, "null"] }
+        field: { type: [string, "null"] }
+        suggestion: { type: [string, "null"] }
+    WorkbookSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - workbook_id
+        - source_filename
+        - source_sha256
+        - imported_at
+        - status
+        - counts
+        - fixture_plans
+      properties:
+        workbook_id: { type: string }
+        source_filename: { type: string }
+        source_sha256: { type: string }
+        imported_at: { type: string, format: date-time }
+        status: { enum: [imported, valid, invalid] }
+        counts:
+          type: object
+          additionalProperties: false
+          required:
+            - cases
+            - fixtures
+            - configs
+            - enabled_cases
+            - enabled_fixtures
+            - errors
+            - warnings
+          properties:
+            cases: { type: integer, minimum: 0 }
+            fixtures: { type: integer, minimum: 0 }
+            configs: { type: integer, minimum: 0 }
+            enabled_cases: { type: integer, minimum: 0 }
+            enabled_fixtures: { type: integer, minimum: 0 }
+            errors: { type: integer, minimum: 0 }
+            warnings: { type: integer, minimum: 0 }
+        fixture_plans:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+    CreateGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [workbook_id, mode]
+      properties:
+        workbook_id: { type: string }
+        mode: { enum: [review, unattended] }
+        case_ids:
+          type: array
+          items: { type: string }
+    GenerationSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - generation_id
+        - workbook_id
+        - mode
+        - status
+        - flow_count
+        - approved_flow_count
+        - flows
+        - fixture_plans
+        - created_at
+        - updated_at
+      properties:
+        generation_id: { type: string }
+        workbook_id: { type: string }
+        mode: { enum: [review, unattended] }
+        status: { enum: [pending, generating, awaiting_review, ready, failed] }
+        flow_count: { type: integer, minimum: 0 }
+        approved_flow_count: { type: integer, minimum: 0 }
+        flows:
+          type: array
+          items:
+            $ref: "#/components/schemas/GenerationFlowSummary"
+        fixture_plans:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        terminal_reason: { type: [string, "null"] }
+    GenerationFlowSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - flow_id
+        - flow_kind
+        - name
+        - status
+        - warning_count
+        - syntax_valid
+        - approved
+      properties:
+        flow_id: { type: string }
+        flow_kind: { enum: [case, fixture] }
+        name: { type: string }
+        status: { enum: [generated, needs_review, approved, failed] }
+        warning_count: { type: integer, minimum: 0 }
+        syntax_valid: { type: boolean }
+        approved: { type: boolean }
+    GeneratedFlowDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - flow_id
+        - flow_kind
+        - name
+        - status
+        - ir
+        - yaml
+        - mappings
+        - warnings
+        - syntax_valid
+        - syntax_attempts
+        - syntax_repairs
+        - approved
+      properties:
+        flow_id: { type: string }
+        flow_kind: { enum: [case, fixture] }
+        name: { type: string }
+        status: { enum: [generated, needs_review, approved, failed] }
+        ir: { type: object, additionalProperties: true }
+        yaml: { type: string }
+        mappings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        warnings:
+          type: array
+          items: { type: string }
+        syntax_valid: { type: boolean }
+        syntax_output: { type: [string, "null"] }
+        syntax_attempts: { type: integer, minimum: 1 }
+        syntax_repairs: { type: integer, minimum: 0 }
+        approved: { type: boolean }
+    ApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [flow_ids]
+      properties:
+        flow_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string }
+    CreateRunRequest:
+      type: object
+      additionalProperties: false
+      required: [generation_id]
+      properties:
+        generation_id: { type: string }
+        case_ids:
+          type: array
+          items: { type: string }
+    RunSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - run_id
+        - generation_id
+        - workbook_id
+        - state
+        - mode
+        - created_at
+        - updated_at
+        - selected_case_ids
+        - pytest_node_ids
+        - case_counts
+        - events_cursor
+        - cancel_requested
+        - repair_count
+        - result_workbook_available
+        - html_report_artifact_id
+      properties:
+        run_id: { type: string }
+        generation_id: { type: string }
+        workbook_id: { type: string }
+        state:
+          enum:
+            - CREATED
+            - VALIDATING
+            - VALIDATION_FAILED
+            - GENERATING
+            - GENERATION_FAILED
+            - AWAITING_REVIEW
+            - READY
+            - PREPARING_DEVICE
+            - RUNNING
+            - DIAGNOSING
+            - REPAIRING
+            - FINALIZING
+            - COMPLETED
+            - COMPLETED_WITH_FAILURES
+            - FAILED
+            - CANCELLED
+        mode: { enum: [review, unattended] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: [string, "null"], format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        ended_at: { type: [string, "null"], format: date-time }
+        device_id: { type: [string, "null"] }
+        avd_name: { type: [string, "null"] }
+        app_id: { type: [string, "null"] }
+        selected_case_ids:
+          type: array
+          items: { type: string }
+        pytest_node_ids:
+          type: array
+          items: { type: string }
+        events_cursor: { type: integer, minimum: 0 }
+        cancel_requested: { type: boolean }
+        terminal_reason: { type: [string, "null"] }
+        repair_count: { type: integer, minimum: 0 }
+        result_workbook_available: { type: boolean }
+        html_report_artifact_id: { type: [string, "null"] }
+        case_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+    CaseRunDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - case_id
+        - state
+        - fixture_plan
+        - attempts
+        - repairs
+        - artifacts
+      properties:
+        case_id: { type: string }
+        state: { type: string }
+        fixture_plan:
+          type: array
+          items: { type: string }
+        attempts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attempt"
+        repairs:
+          type: array
+          items:
+            $ref: "#/components/schemas/RepairRecord"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Artifact"
+        business_result: { type: [string, "null"] }
+        cleanup_result: { type: [string, "null"] }
+        started_at: { type: [string, "null"], format: date-time }
+        ended_at: { type: [string, "null"], format: date-time }
+        duration_seconds: { type: [number, "null"], minimum: 0 }
+    Attempt:
+      type: object
+      additionalProperties: false
+      required: [attempt_id, ordinal, state, artifact_ids]
+      properties:
+        attempt_id: { type: string }
+        ordinal: { type: integer, minimum: 1 }
+        state: { type: string }
+        failure_type:
+          type: [string, "null"]
+          enum: [YAML_SYNTAX, LOCATOR, ASSERTION, ENVIRONMENT, FIXTURE, TIMEOUT, UNKNOWN, null]
+        failure_reason: { type: [string, "null"] }
+        failed_step: { type: [integer, "null"], minimum: 1 }
+        failed_selector: { type: [string, "null"] }
+        exit_code: { type: [integer, "null"] }
+        artifact_ids:
+          type: array
+          items: { type: string }
+        repair_id: { type: [string, "null"] }
+    RepairRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - repair_id
+        - case_id
+        - attempt_id
+        - failure_type
+        - evidence_artifact_ids
+        - reason
+        - before_selector
+        - after_selector
+        - yaml_diff_path
+        - approved_automatically
+        - created_at
+      properties:
+        repair_id: { type: string }
+        case_id: { type: string }
+        attempt_id: { type: string }
+        failure_type: { const: LOCATOR }
+        evidence_artifact_ids:
+          type: array
+          items: { type: string }
+        reason: { type: string }
+        before_selector: { type: string }
+        after_selector: { type: string }
+        yaml_diff_path: { type: string }
+        approved_automatically: { type: boolean }
+        created_at: { type: string, format: date-time }
+    Artifact:
+      type: object
+      additionalProperties: false
+      required: [artifact_id, kind, relative_path, media_type, sha256, created_at]
+      properties:
+        artifact_id: { type: string }
+        kind: { type: string }
+        relative_path: { type: string }
+        media_type: { type: string }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        case_id: { type: [string, "null"] }
+        attempt_id: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id, details, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        request_id: { type: string }
+        details:
+          type: array
+          items: { type: object, additionalProperties: true }
+        retryable: { type: boolean }
