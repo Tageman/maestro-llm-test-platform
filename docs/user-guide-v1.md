@@ -2,9 +2,9 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | V1.0，M4 规划阶段初稿 |
-| 适用范围 | 本地 Android Studio 模拟器；平台代码当前为 M0～M3 已签收版本 |
-| 状态 | 待 M4-AC-05 非开发人员独立走查、修订并签署；不是正式发布说明 |
+| 版本 | V1.1 |
+| 适用范围 | 本地 Android Studio 模拟器 |
+| 说明 | 本文描述当前可用功能和已知限制；发布前请先阅读限制与排障 |
 
 本平台读取 `Cases`、`Fixtures`、`Config` 三个 Sheet，把结构化中文步骤转换为 Flow IR，再编译为 Maestro YAML、检查语法；通过 pytest 管理前后夹具并在 Android 模拟器上实际运行。Maestro CLI 用于执行，Maestro MCP 只在可修复的文本定位失败后收集页面层级/截图并诊断。源 Excel 不修改，运行结果生成副本。
 
@@ -12,10 +12,10 @@
 
 ### 1.1 前提与版本边界
 
-- 已验证的环境为 macOS、本地 Android Studio 模拟器 `Pixel_5`、Maestro CLI `2.10.0`、目标包 `aippt.com.mm`；其他系统/版本尚未完成 M4 独立验收。准备 Python 3.11、Node.js/npm、Android SDK 的 `adb` 与 `emulator` 命令、Maestro CLI，以及目标 App APK 或预装包。
+- 已验证的环境为 macOS、本地 Android Studio 模拟器 `Pixel_5`、Maestro CLI `2.10.0`、目标包 `aippt.com.mm`；其他系统/版本尚未验证。准备 Python 3.11、Node.js/npm、Android SDK 的 `adb` 与 `emulator` 命令、Maestro CLI，以及目标 App APK 或预装包。
 - 创建或启动一台 Android AVD，确认启动完成且包名与 Excel `app_id` 相同。当前只支持模拟器；本地真机、iOS、云设备和并发控制多台设备不在一期范围。
 - 平台运行时断开 Maestro Studio 对同一模拟器的连接；不要同时让其他 Maestro CLI/MCP 操作该设备。
-- 用测试账号和专用 AVD；用例输入的账号、YAML、截图、日志和结果文件会保存在本地。输入 ASCII 账号/密码时，先确认模拟器输入法能正确输入英文字符。密码管理器或系统弹窗可能遮挡目标控件；详见[模拟器操作说明](m2-operations.md)。其中临时关闭凭据服务是专用 AVD 的显式授权验收措施，不是普通运行的默认步骤。
+- 用测试账号和专用 AVD；用例输入的账号、YAML、截图、日志和结果文件会保存在本地。输入 ASCII 账号/密码时，先确认模拟器输入法能正确输入英文字符。密码管理器或系统弹窗可能遮挡目标控件，不建议将关闭凭据服务作为普通运行的默认步骤。
 
 ### 1.2 安装和检查
 
@@ -32,31 +32,30 @@ adb devices -l
 emulator -list-avds
 ```
 
-若 `python3.11` 命令不可用，使用本机指向 Python 3.11 的命令；切勿在未确认解释器版本时混用系统 Python。`adb devices -l` 应列出状态为 `device` 的 `emulator-...`；`emulator -list-avds` 应包含 Config 中的 `avd_name`。如目标包已安装，可用 `adb -s <device_id> shell pm path <app_id>` 验证；否则在 Excel Config 提供可读的 APK 路径，由设备准备阶段安装。
+安装依赖通常只需首次或依赖变更时执行；版本/设备检查用于初次配置和排障，不必每次重复。若 `python3.11` 命令不可用，使用本机指向 Python 3.11 的命令；切勿在未确认解释器版本时混用系统 Python。`adb devices -l` 应列出状态为 `device` 的 `emulator-...`；`emulator -list-avds` 应包含 Config 中的 `avd_name`。若终端提示 `emulator: command not found`，把 Android SDK 的 `emulator/` 加入 `PATH`，或直接使用其绝对路径；平台也可通过 `EMULATOR_COMMAND` 指定绝对路径。如目标包已安装，可用 `adb -s <device_id> shell pm path <app_id>` 验证；否则在 Excel Config 提供可读的 APK 路径，由设备准备阶段安装。
 
 ### 1.3 环境变量与启动
 
 后端读取进程环境变量，不会自动加载 `.env`。可从[变量示例](../.env.example)复制所需值并通过终端或进程管理器导出。最低需要保证 `MAESTRO_COMMAND`、`ADB_COMMAND`、`EMULATOR_COMMAND` 可找到各自可执行文件，`APP_ID`/`AVD_NAME` 与 Excel 一致。示例：
 
 ```bash
-export MAESTRO_COMMAND=/absolute/path/to/maestro
 export APP_ID=aippt.com.mm
 export AVD_NAME=Pixel_5
 export RUNTIME_DIR=./runtime
-make dev
+make dev PYTHON=python3.11
 ```
 
-`ANDROID_DEVICE_ID` 可在只有一台在线模拟器时留空；有多台时在 Excel Config 中指定目标 ID。`LLM_BASE_URL`、`LLM_MODEL` 及可选 `LLM_API_KEY` 配齐后使用兼容结构化输出的 LLM；不配置时使用离线规则翻译器，只接受下文的固定中文句式。不要把 API Key 填入 Excel。`RUNTIME_DIR` 决定服务端的工作簿、生成物和 Run 产物根目录。
+若程序找不到工具，再额外导出 `MAESTRO_COMMAND`、`ADB_COMMAND`、`EMULATOR_COMMAND` 的绝对路径。`ANDROID_DEVICE_ID` 可在只有一台在线模拟器时留空；有多台时在 Excel Config 中指定目标 ID。`LLM_BASE_URL`、`LLM_MODEL` 及可选 `LLM_API_KEY` 配齐后使用兼容结构化输出的 LLM；不配置时使用离线规则翻译器，只接受下文的固定中文句式。LLM 只生成 IR，YAML 始终由平台编译器生成；不要把 API Key 填入 Excel。`RUNTIME_DIR` 决定服务端的工作簿、生成物和 Run 产物根目录。
 
-浏览器访问 `http://127.0.0.1:5173`；`http://127.0.0.1:8000/api/v1/health` 应返回健康响应。用 `Ctrl+C` 停止 `make dev`。验证当前代码可运行 `make verify PYTHON=python3.11`；不要让默认 `python3` 意外指向未安装依赖的解释器。前后端分开启动及更多测试命令见[README](../README.md)。
+浏览器访问 `http://127.0.0.1:5173`；`http://127.0.0.1:8000/api/v1/health` 应返回健康响应。服务运行时保持该终端打开，用 `Ctrl+C` 停止。每次使用 Web 页面都需重新启动服务；`export` 只在当前终端会话生效，可按需要持久配置。验证当前代码可运行 `make verify PYTHON=python3.11`；不要让默认 `python3` 意外指向未安装依赖的解释器。
 
 ## 2. 填写 Excel 与执行
 
 1. 从项目外的原始 Excel 模板复制一份（原始示例可能含测试账号，不随公开代码提交），保留 `Cases`、`Fixtures`、`Config` 名称与第 5 行表头。从第 6 行填业务数据；不要填写结果列。原始模板用于示范，不应直接覆盖历史验收证据。
-2. 在 `Config` 填项目包名、Maestro 可执行文件、目标模拟器、超时及修复上限。`maestro_command` 是本机 CLI 命令或绝对路径，不是 YAML API 地址。确认 `launch_clear_state=false` 时由 `FX-APP-RESET` 显式清状态，避免语义重复；该 Config 字段本身的执行闭环仍列为 M4 待收口项，见第 5 节。
+2. 在 `Config` 填项目包名、Maestro 可执行文件、目标模拟器、超时及修复上限。`maestro_command` 是本机 CLI 命令或绝对路径，不是 YAML API 地址。当前由 `FX-APP-RESET` 显式清状态；`launch_clear_state` 字段本身尚未驱动执行，见第 4 节。
 3. 在 `Fixtures` 定义前置/后置步骤和依赖；在 `Cases` 引用直接需要的夹具。若 `FX-LOGIN-READY` 依赖 `FX-APP-RESET`，Case 只写 `FX-LOGIN-READY`，平台会自动展开、去重并先执行 reset。依赖关系优先于同层的 `执行顺序` 数值；后置清理按逆序执行。依赖缺失、停用、跨阶段或成环会阻断。
-4. 在 Web 页面上传 `.xlsx`。先检查启用 Case/Fixture 数、Config 数、每个问题的 Sheet/行/列和 Fixture 计划。`error` 必须修好并重新上传；`warning` 不能无人值守自动批准。
-5. 选择“人工预览”或“无人值守”，点击“生成全部 IR 与 YAML”。人工预览可逐 Flow 查看源步骤→IR/命令→选择器/断言→完整 YAML 和语法结果，逐项确认；“批量确认无警告项”不会代替有 warning 项的人工复核。全部获准后 Generation 才变为 `ready`。当前无人值守模式会自动批准语法通过的 Flow，包括带 warning 的 Flow，这是 M4 待修复的门禁偏差；在修复前，只对无 warning 的输入使用无人值守模式，若出现 warning 应停止执行并改走人工预览。无人值守生成后仍需手动点击下一步启动 Run。
+4. 在 Web 页面上传 `.xlsx`。先检查启用 Case/Fixture 数、Config 数、每个问题的 Sheet/行/列和 Fixture 计划。`error` 必须修好并重新上传；出现 `warning` 时应走人工复核。
+5. 选择“人工预览”或“无人值守”，点击“生成全部 IR 与 YAML”。人工预览可逐 Flow 查看源步骤→IR/命令→选择器/断言→完整 YAML 和语法结果，逐项确认；“批量确认无警告项”不会代替有 warning 项的人工复核。全部获准后 Generation 才变为 `ready`。当前无人值守模式会自动批准语法通过的 Flow，包括带 warning 的 Flow，这是已知门禁偏差；在修复前，只对无 warning 的输入使用无人值守模式，若出现 warning 应停止执行并改走人工预览。无人值守生成后仍需手动点击下一步启动 Run。
 6. 点击“连接模拟器并执行”。平台检查设备/包，生成 pytest 用例及夹具，Maestro CLI 在模拟器上运行。`LOCATOR` 失败仅在 MCP 页面证据存在唯一文本候选时，才受控修改失败步骤的 Selector、检查语法并从完整前置 Fixture 链重跑；断言/环境/夹具/超时/未知错误不会被自动改写。
 7. 在“真实执行控制台”观察 Run/Case/Attempt/Repair；终态后下载“结果 Excel”和 Artifact，查看 HTML 报告。浏览器刷新可用 `http://127.0.0.1:5173/?run=<run_id>` 重开已持久化 Run。`COMPLETED` 表示全部 Case 通过；`COMPLETED_WITH_FAILURES` 表示流程结束但有业务失败；`FAILED` 表示 Run 级错误；`CANCELLED` 为安全终止。
 
@@ -134,7 +133,7 @@ make dev
 | Q 最后执行时间 | 同上 |
 | R 备注 | 可空；人工说明 |
 
-夹具的实际执行证据请在 Run 的 trace、Attempt JUnit/日志和 Artifact 中查看。K～Q 是否纳入正式回写需在 M4 契约核对后定稿。
+夹具的实际执行证据请在 Run 的 trace、Attempt JUnit/日志和 Artifact 中查看。K～Q 当前不回写。
 
 ### 4.3 `Config`（第 5 行表头，A～E）
 
@@ -149,29 +148,29 @@ make dev
 | `avd_name` | 可空；无在线设备而需启动 AVD 时提供名称，如 `Pixel_5` |
 | `maestro_command` | Maestro CLI 可执行文件名或绝对路径，如 `/absolute/path/to/maestro`；不是 Maestro YAML API 地址 |
 | `execution_target` | 一期固定 `android_emulator` |
-| `output_dir` | 模板中为输出目录；当前 Run 实际写入服务端 `RUNTIME_DIR/runs/<run_id>/`，此字段尚未驱动产物路径，M4 待收口 |
+| `output_dir` | 模板中为输出目录；当前 Run 实际写入服务端 `RUNTIME_DIR/runs/<run_id>/`，此字段尚未驱动产物路径 |
 | `test_timeout_ms` | 单 Flow 超时毫秒，必须大于 0；基线 120000 |
 | `max_syntax_repair` | 生成阶段语法修复次数上限，≥0；基线 3 |
 | `max_locator_repair` | 执行阶段文本定位修复次数上限，≥0；基线 2 |
 | `max_total_run_attempts` | 每 Case 总执行次数上限，含第一次，≥1；基线 3 |
-| `continue_on_failure` | 预期控制前一 Case 失败后是否继续；当前实现始终继续后续独立 Case，`false` 语义尚未闭环，M4 待收口 |
-| `launch_clear_state` | 预期控制启动时是否清 App 状态；当前运行链未读取此值。基线设 `false`，显式 `FX-APP-RESET` 负责清状态；M4 待收口 |
+| `continue_on_failure` | 预期控制前一 Case 失败后是否继续；当前实现始终继续后续独立 Case，`false` 暂不生效 |
+| `launch_clear_state` | 预期控制启动时是否清 App 状态；当前运行链未读取此值。基线设 `false`，显式 `FX-APP-RESET` 负责清状态 |
 | `pytest_workers` | 一期固定 `1`，禁止同设备并发 |
 | `result_writeback` | `true` 在 Run 终态生成结果 Excel 副本；`false` 不生成该副本 |
 | `language` | 一期固定 `zh-CN`，指用例描述语言，不是模拟器键盘布局 |
 | `fixture_id_separator` | 夹具 ID 列表的单字符分隔符；基线半角 `;`；`标签`仍固定使用半角 `;` |
 | `allow_assertion_rewrite` | 一期必须为 `false`；禁止自动修改预期断言 |
 
-`Config` 表后面的编写规范/说明行不是配置键，也不会作为运行指令解析。当前仅定位失败可自动修复；模板中若写“环境错误仅重试”，不要据此期待平台自动环境重试，M4 会校正该说明。
+`Config` 表后面的编写规范/说明行不是配置键，也不会作为运行指令解析。当前仅定位失败可自动修复；模板中若写“环境错误仅重试”，不要据此期待平台自动环境重试。
 
 ## 5. 结果、限制与排障
 
 - Run 目录在 `RUNTIME_DIR/runs/<run_id>/`；结果 Excel 在其 `result/` 中，源 Excel 位于只读导入快照且 SHA-256 应不变。结果副本的 `Cases` K～X 是实际回写范围；`Fixtures` K～Q 尚未回写。下载路径由 Web/API 提供，Artifact manifest 可核对哈希。
 - 上传失败：检查三个 Sheet 名、第 5 行表头、必填列、ID 唯一性、半角分隔符、夹具 DAG 和不可观察预期。根据页面上的 Sheet/行/列定位修改，再重新上传；不要修改已导入的源快照。
 - 生成失败：检查步骤编号及第 3 节固定句式，查看 Flow 语法输出；LLM 未配置时无法理解任意自然语言。语法修复达到上限后不能批准 Flow。
-- 无人值守出现 warning：当前版本不能依赖系统自动阻断该 Flow；不要点击“连接模拟器并执行”，应重新导入并选择人工预览复核。此门禁将在 M4 收口。
+- 无人值守出现 warning：当前版本不能依赖系统自动阻断该 Flow；不要点击“连接模拟器并执行”，应重新导入并选择人工预览复核。
 - 设备准备失败：检查 `adb devices -l`、`emulator -list-avds`、`app_id`/`apk_path`、指定的 `android_device_id`；确保 Maestro Studio 已断开。离线、多个未指定设备、包不存在会阻断真实执行。
 - 运行中失败：在 Case→Attempt 查看失败类型、失败步骤、JUnit、日志与截图。`LOCATOR` 只有唯一候选和完整 MCP 证据才会尝试修复；`ASSERTION` 需人工核对业务预期/应用行为，不能靠平台改断言。环境/Fixture/超时问题先修复环境或用例，再创建新 Generation/Run。
-- 后端意外退出：已完成 Run 可按 ID 读取；当前版本尚未完成 M4 的非终态重启恢复门禁，切勿假定执行会自动续跑，也不要在不核对进程/设备状态时重复启动同一 Run。先保存 `run.json`、事件和日志，确认无残留 pytest/Maestro 进程，再在新 Run 重新执行。
+- 后端意外退出：已完成 Run 可按 ID 读取；当前版本尚未完成非终态重启恢复，切勿假定执行会自动续跑，也不要在不核对进程/设备状态时重复启动同一 Run。先保存 `run.json`、事件和日志，确认无残留 pytest/Maestro 进程，再在新 Run 重新执行。
 
-本说明书只陈述 M0～M3 的当前可用行为和 M4 已识别差异。M4-AC-05 完成非开发者独立走查后再标记为正式版；M4 全部门禁通过前，不宣称一期正式发布。
+本说明书描述当前实现；已知限制已经在对应步骤标明。升级后请重新核对这些限制与实际版本是否一致。
