@@ -36,6 +36,8 @@ emulator -list-avds
 
 ### 1.3 环境变量与启动
 
+升级包含 MCP 截图校验的版本后，请在运行 Web 服务的同一个 Python 环境重新执行上面的 `pip install -e '.[dev]'`，安装新增的 Pillow 图片解码依赖；无需重装 Android Studio 或模拟器。
+
 后端读取进程环境变量，不会自动加载 `.env`。可从[变量示例](../.env.example)复制所需值并通过终端或进程管理器导出。最低需要保证 `MAESTRO_COMMAND`、`ADB_COMMAND`、`EMULATOR_COMMAND` 可找到各自可执行文件，`APP_ID`/`AVD_NAME` 与 Excel 一致。示例：
 
 ```bash
@@ -178,6 +180,7 @@ make dev PYTHON=python3.11
 - 无人值守出现 warning：生成进入待确认状态，逐个复核并批准后才能执行；无需改变原请求模式。旧版带 warning、但没有人工确认来源的批准会被要求重新复核。
 - 设备准备失败：检查 `adb devices -l`、`emulator -list-avds`、`app_id`/`apk_path`、指定的 `android_device_id`；确保 Maestro Studio 已断开。离线、多个未指定设备、包不存在会阻断真实执行。
 - 运行中失败：在 Case→Attempt 查看失败类型、失败步骤、JUnit、日志与截图。`LOCATOR` 只有唯一候选和完整 MCP 证据才会尝试修复；`ASSERTION` 需人工核对业务预期/应用行为，不能靠平台改断言。环境/Fixture/超时问题先修复环境或用例，再创建新 Generation/Run。
+- MCP 诊断被拒绝：设备列表必须明确包含完全一致的 `device_id`，且为已连接的 Android 模拟器；相似 ID、离线或冲突列表不会继续读取页面。截图仅接受可完整解码的单帧 PNG/JPEG，声明类型须与实际内容一致，按真实格式保存 `.png`/`.jpg`；最多 16 MiB、1600 万像素、单边最多 8192 像素。图片损坏、类型不符或超过限制时保留诊断错误，不生成修复补丁或追加修复重试；这不代表原失败用例通过。未知 MCP 返回结构同样停止修复，需检查 Maestro 版本兼容性。
 - 后端意外退出：服务启动或创建新 Run 前进行恢复检查。已完成 Run 保持结果；新版未完成 Run 在其工作进程清理后安全终止，不自动续跑、修复、写回或重复导出。活动 Case 的业务/清理结果不能确认时标为 unknown，未执行 Case 为 BLOCKED。按 Run ID 查看原因，并下载恢复快照/报告后再新建 Run。
 - 出现 `RUNTIME_BUSY`：同一个 `RUNTIME_DIR` 仍被其他服务或清理中的守护进程占用。等待清理结束再重试；不要删除 `.execution.lock`，也不要切换 runtime 来绕过同一设备的串行限制。
 - 出现 `LEGACY_PROCESS_CHECK_REQUIRED`：旧版 Run 缺少可验证的进程所有权。人工核查并停止属于该旧 Run 的 pytest/Maestro/MCP 进程、确认设备状态后，在项目根目录、使用与 Web 相同的 `RUNTIME_DIR` 执行 `python3.11 -m maestro_app.cli.recover --run-id <旧RunID> --confirm-no-owned-processes`。该命令只记录人工确认，不代为检查或杀进程，不能在未核查时执行。既有模拟器与 ADB 服务不会因测试工作进程清理而被自动关闭。

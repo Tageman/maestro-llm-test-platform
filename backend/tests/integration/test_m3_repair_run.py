@@ -7,6 +7,8 @@ from copy import copy
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from openpyxl import load_workbook
 
 from maestro_app.application.flow_translator import RuleBasedFlowTranslator
@@ -21,10 +23,54 @@ from maestro_app.domain.models import CreateGenerationRequest, CreateRunRequest,
 from maestro_app.infrastructure.excel_importer import ExcelWorkbookImporter
 from maestro_app.infrastructure.generation_repository import GenerationRepository
 from maestro_app.infrastructure.mcp_diagnostics import McpDiagnosticResult
+from maestro_app.infrastructure.mcp_diagnostics import MaestroMcpDiagnosticService
 from maestro_app.infrastructure.result_workbook import ResultWorkbookWriter
 from maestro_app.infrastructure.run_repository import RunRepository
 from maestro_app.infrastructure.workbook_repository import WorkbookRepository
 from m1_helpers import build_sample_workbook
+from unit.test_mcp_diagnostics import DiagnosticClient, device, screenshot
+
+
+@pytest.mark.parametrize("fault", ["wrong-device", "bad-image", "valid"])
+def test_real_diagnostic_gate_controls_run_repair(tmp_path, monkeypatch, fault):
+    runtime = tmp_path / "runtime"
+    workbooks = WorkbookRepository(runtime)
+    generations = GenerationRepository(runtime)
+    runs = RunRepository(runtime)
+    source = build_sample_workbook(tmp_path / "diagnostic-gate.xlsx")
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    imported = WorkbookService(workbooks, ExcelWorkbookImporter()).import_bytes(source.name, source.read_bytes())
+    generation = GenerationService(workbooks, generations, RuleBasedFlowTranslator(), syntax_checker=PassingSyntaxChecker()).create(
+        CreateGenerationRequest(workbook_id=imported.workbook_id, mode=RunMode.UNATTENDED)
+    )
+    client = DiagnosticClient(
+        devices={"devices": [device(device_id="emulator-55540")]} if fault == "wrong-device" else None,
+        image=screenshot(b"not an image") if fault == "bad-image" else None,
+    )
+    monkeypatch.setattr("maestro_app.infrastructure.mcp_diagnostics.MaestroMcpClient", lambda *a, **kw: client)
+    runner = FailOncePytestRunner()
+    service = RunService(workbooks, generations, runs, GeneratedPytestPackageBuilder(runs), PreparedDevice(), runner,
+                         diagnostic_service=MaestroMcpDiagnosticService(), syntax_checker=PassingSyntaxChecker(),
+                         result_writer=ResultWorkbookWriter(), background=False)
+    summary = service.create(CreateRunRequest(generation_id=generation.generation_id))
+    run = runs.get_run(summary.run_id)
+    case = service.get_case(run.run_id, "TC-HOME-001")
+    yaml_path = runs.run_dir(run.run_id) / "generated/cases/TC-HOME-001.yaml"
+    if fault == "valid":
+        assert summary.state == RunState.COMPLETED
+        assert runner.calls == 2 and len(run.repairs) == 1
+        assert case.state == CaseRunState.PASSED
+    else:
+        assert summary.state == RunState.COMPLETED_WITH_FAILURES
+        assert case.state == CaseRunState.FAILED
+        assert runner.calls == 1 and len(case.attempts) == 1 and not run.repairs
+        assert "tapOn: 确认设置" in yaml_path.read_text()
+        assert not list(runs.run_dir(run.run_id).glob("repairs/**/selector.diff"))
+        assert any(artifact.kind == "diagnostic_error" for artifact in run.artifacts)
+        assert not any(event.state == RunState.REPAIRING for event in runs.list_events(run.run_id))
+    assert run.result_workbook_path and (runs.run_dir(run.run_id) / run.result_workbook_path).is_file()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
+    assert client.closed
 
 
 class PassingSyntaxChecker:
