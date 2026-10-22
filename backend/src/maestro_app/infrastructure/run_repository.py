@@ -133,6 +133,19 @@ class RunRepository:
             raise ResourceNotFound("run", run_id)
         return Run.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def list_runs(self) -> list[Run]:
+        # Fail closed on corrupt records or links rather than silently ignoring
+        # a possibly active Run during restart recovery.
+        result = []
+        for path in sorted((self.runtime_dir / "runs").glob("*/run.json")):
+            if path.is_symlink() or path.parent.is_symlink():
+                raise UnsafeRunPath("linked Run records cannot be recovered")
+            run = self.get_run(path.parent.name)
+            if run.run_id != path.parent.name:
+                raise UnsafeRunPath("Run identity does not match its directory")
+            result.append(run)
+        return result
+
     def append_event(
         self,
         run: Run,
@@ -146,7 +159,10 @@ class RunRepository:
     ) -> tuple[Run, RunEvent]:
         with self._event_lock:
             current = self.get_run(run.run_id)
-            sequence = current.events_cursor + 1
+            # A crash may persist an event before updating run.json's cursor.
+            # Never replace that event with a recovery event on restart.
+            committed = [int(path.stem) for path in (self.run_dir(run.run_id) / "events").glob("*.json")]
+            sequence = max([current.events_cursor, *committed]) + 1
             event = RunEvent(
                 event_id=f"{run.run_id}-{sequence:06d}",
                 run_id=run.run_id,

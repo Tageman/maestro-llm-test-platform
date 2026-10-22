@@ -162,3 +162,71 @@ def test_invalid_workbook_is_visible_but_generation_is_blocked(tmp_path: Path) -
     )
     assert generated.status_code == 409
     assert generated.json()["code"] == "WORKBOOK_VALIDATION_FAILED"
+
+
+def test_unattended_warnings_block_run_until_explicit_api_approval(tmp_path: Path) -> None:
+    class WarningTranslator(RuleBasedFlowTranslator):
+        def _context(self):
+            return super()._context().model_copy(
+                update={"warnings": ["请人工复核页面定位"]}
+            )
+
+    settings = _settings(tmp_path)
+    workbook_repository = WorkbookRepository(settings.runtime_dir)
+    workbook_service = WorkbookService(workbook_repository, ExcelWorkbookImporter())
+    generation_service = GenerationService(
+        workbook_repository,
+        GenerationRepository(settings.runtime_dir),
+        WarningTranslator(),
+        syntax_checker=PassingSyntaxChecker(),
+    )
+    client = TestClient(
+        create_app(
+            settings,
+            workbook_service=workbook_service,
+            generation_service=generation_service,
+        )
+    )
+    source = build_sample_workbook(tmp_path / "warning.xlsx")
+    imported = client.post(
+        "/api/v1/workbooks", files={"file": (source.name, source.read_bytes())}
+    )
+    assert imported.status_code == 202
+    generated = client.post(
+        "/api/v1/generations",
+        json={"workbook_id": imported.json()["workbook_id"], "mode": "unattended"},
+    )
+    assert generated.status_code == 202
+    generation = generated.json()
+    generation_id = generation["generation_id"]
+    assert generation["status"] == "awaiting_review"
+    assert generation["approved_flow_count"] == 0
+    assert all(flow["status"] == "needs_review" for flow in generation["flows"])
+
+    blocked = client.post("/api/v1/runs", json={"generation_id": generation_id})
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "GENERATION_NOT_READY"
+
+    partial = client.post(
+        f"/api/v1/generations/{generation_id}/approval",
+        json={"flow_ids": ["TC-HOME-001"]},
+    )
+    assert partial.status_code == 200
+    assert partial.json()["status"] == "awaiting_review"
+    still_blocked = client.post("/api/v1/runs", json={"generation_id": generation_id})
+    assert still_blocked.status_code == 409
+    assert still_blocked.json()["code"] == "GENERATION_NOT_READY"
+
+    approved = client.post(
+        f"/api/v1/generations/{generation_id}/approval",
+        json={"flow_ids": ["FX-APP-RESET", "FX-LOGIN-READY"]},
+    )
+    assert approved.status_code == 200
+    assert approved.json()["mode"] == "unattended"
+    assert approved.json()["status"] == "ready"
+    assert approved.json()["approved_flow_count"] == 3
+    detail = client.get(
+        f"/api/v1/generations/{generation_id}/flows/TC-HOME-001"
+    ).json()
+    assert detail["approved"] is True
+    assert detail["warnings"] == ["请人工复核页面定位"]

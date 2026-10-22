@@ -95,7 +95,8 @@ def stream_run_events(
                     f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 )
             current = request.app.state.run_service.get(run_id)
-            if current.state in TERMINAL_STATES and cursor >= current.events_cursor:
+            if (current.state in TERMINAL_STATES and current.export_status != "pending"
+                    and cursor >= current.events_cursor):
                 break
             if await request.is_disconnected():
                 break

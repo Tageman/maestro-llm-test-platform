@@ -172,11 +172,18 @@ class GenerationService:
                     syntax_output=syntax.output,
                     syntax_attempts=syntax_attempts,
                     syntax_repairs=syntax_repairs,
-                    approved=request.mode == RunMode.UNATTENDED and syntax.valid,
+                    approved=(
+                        request.mode == RunMode.UNATTENDED
+                        and syntax.valid
+                        and not warnings
+                    ),
                 )
                 if detail.approved:
                     detail = detail.model_copy(
-                        update={"status": FlowGenerationStatus.APPROVED}
+                        update={
+                            "status": FlowGenerationStatus.APPROVED,
+                            "approval_method": "automatic",
+                        }
                     )
                 self.generation_repository.save_flow(generation_id, detail)
                 details.append(detail)
@@ -189,7 +196,9 @@ class GenerationService:
 
         if terminal_reason is not None:
             status = GenerationStatus.FAILED
-        elif request.mode == RunMode.REVIEW:
+        elif request.mode == RunMode.REVIEW or any(
+            not detail.approved for detail in details
+        ):
             status = GenerationStatus.AWAITING_REVIEW
         else:
             status = GenerationStatus.READY
@@ -203,7 +212,69 @@ class GenerationService:
         return summary
 
     def get(self, generation_id: str) -> GenerationSummary:
-        return self.generation_repository.get_summary(generation_id)
+        summary = self.generation_repository.get_summary(generation_id)
+        if summary.status not in {
+            GenerationStatus.READY,
+            GenerationStatus.AWAITING_REVIEW,
+        }:
+            return summary
+
+        details = [
+            self.generation_repository.get_flow(generation_id, flow.flow_id)
+            for flow in summary.flows
+        ]
+        changed = False
+        for index, detail in enumerate(details):
+            if (
+                detail.warnings
+                and detail.approved
+                and detail.approval_method != "manual"
+            ):
+                # Older records cannot prove whether a warning was reviewed.
+                # Revoke that approval, retaining all warning and generation evidence.
+                detail = detail.model_copy(
+                    update={
+                        "approved": False,
+                        "status": FlowGenerationStatus.NEEDS_REVIEW,
+                    }
+                )
+                self.generation_repository.save_flow(generation_id, detail)
+                details[index] = detail
+                changed = True
+        if not changed and not (
+            summary.status == GenerationStatus.READY
+            and any(not detail.approved for detail in details)
+        ):
+            return summary
+        summary = self._summary(
+            summary, details, status=GenerationStatus.AWAITING_REVIEW
+        )
+        self.generation_repository.save_summary(summary)
+        return summary
+
+    def validate_for_execution(self, generation_id: str) -> GenerationSummary:
+        summary = self.get(generation_id)
+        if summary.status != GenerationStatus.READY:
+            raise StateConflict(
+                "GENERATION_NOT_READY", "只有全部 Flow 通过确认门禁后才可创建 Run"
+            )
+        blocked = []
+        for flow in summary.flows:
+            detail = self.generation_repository.get_flow(generation_id, flow.flow_id)
+            if (
+                not detail.syntax_valid
+                or not detail.approved
+                or detail.status != FlowGenerationStatus.APPROVED
+                or (detail.warnings and detail.approval_method != "manual")
+            ):
+                blocked.append({"flow_id": detail.flow_id})
+        if blocked:
+            raise StateConflict(
+                "GENERATION_NOT_READY",
+                "Flow 尚未通过语法检查或确认门禁；含 warning 的 Flow 必须人工确认",
+                blocked,
+            )
+        return summary
 
     def get_flow(self, generation_id: str, flow_id: str) -> GeneratedFlowDetail:
         self.get(generation_id)
@@ -213,7 +284,9 @@ class GenerationService:
         self, generation_id: str, request: ApprovalRequest
     ) -> GenerationSummary:
         summary = self.get(generation_id)
-        if summary.mode != RunMode.REVIEW or summary.status not in {
+        # Unattended generation pauses here when a warning needs explicit review.
+        # Keep its requested mode so subsequent execution retains that policy.
+        if summary.status not in {
             GenerationStatus.AWAITING_REVIEW,
             GenerationStatus.READY,
         }:
@@ -238,6 +311,7 @@ class GenerationService:
                 update={
                     "approved": True,
                     "status": FlowGenerationStatus.APPROVED,
+                    "approval_method": "manual",
                 }
             )
             self.generation_repository.save_flow(generation_id, detail)

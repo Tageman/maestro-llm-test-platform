@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 
 from maestro_app.application.ports import ManagedProcessResult, PytestPackage
 from maestro_app.core.config import Settings
+from maestro_app.infrastructure.owned_process import finish_owned, popen_owned
+from maestro_app.infrastructure.shared_process import SharedPytestProcess
 
 
 class ManagedPytestRunner:
@@ -19,6 +22,7 @@ class ManagedPytestRunner:
         self.python_command = python_command or sys.executable
         self._active: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.Lock()
+        self._shared: dict[str, SharedPytestProcess] = {}
 
     def collect(self, package: PytestPackage) -> ManagedProcessResult:
         args = [
@@ -29,6 +33,8 @@ class ManagedPytestRunner:
             "-q",
             str(package.test_file),
         ]
+        if json.loads(package.config_path.read_text()).get("shared_scopes"):
+            args[-1:] = list(package.node_ids)
         return self._execute(
             args,
             output_path=package.collection_path,
@@ -46,6 +52,12 @@ class ManagedPytestRunner:
         cancel_event: threading.Event,
         on_tick: Callable[[], None] | None = None,
     ) -> ManagedProcessResult:
+        if json.loads(package.config_path.read_text()).get("shared_scopes"):
+            worker = self._shared.get(run_id)
+            if worker is None:
+                worker = SharedPytestProcess(self, run_id, package)
+                self._shared[run_id] = worker
+            return worker.request(package, command="run", timeout_seconds=timeout_seconds, cancel_event=cancel_event, on_tick=on_tick)
         args = [
             self.python_command,
             "-m",
@@ -67,10 +79,17 @@ class ManagedPytestRunner:
         )
 
     def cancel(self, run_id: str) -> None:
+        worker = self._shared.get(run_id)
+        if worker:
+            worker.abort()
         with self._lock:
             process = self._active.get(run_id)
         if process is not None and process.poll() is None:
             self._terminate_group(process)
+
+    def close_run(self, run_id: str):
+        worker = self._shared.pop(run_id, None)
+        return worker.close() if worker else None
 
     def _execute(
         self,
@@ -89,7 +108,7 @@ class ManagedPytestRunner:
         timed_out = False
         cancelled = False
         with output_path.open("wb") as output:
-            process = subprocess.Popen(
+            process = popen_owned(
                 list(args),
                 cwd=cwd,
                 env=env,
@@ -119,8 +138,7 @@ class ManagedPytestRunner:
                 if cancel_event is not None and cancel_event.is_set():
                     cancelled = True
             finally:
-                if process.poll() is None:
-                    self._terminate_group(process)
+                finish_owned(process)
                 if run_id:
                     with self._lock:
                         self._active.pop(run_id, None)
@@ -152,6 +170,9 @@ class ManagedPytestRunner:
         env["PYTHONPATH"] = str(backend_src)
         env["MAESTRO_APP_PYTEST_CONFIG"] = str(package.config_path)
         env["PYTHONUNBUFFERED"] = "1"
+        # Generated runs require only built-in pytest and our explicit bridge.
+        # Host-installed plugins must not mutate outcomes or fixture lifetimes.
+        env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         return env
 
     def _read_tail(self, path: Path) -> tuple[str, bool]:
@@ -164,6 +185,12 @@ class ManagedPytestRunner:
 
     @staticmethod
     def _terminate_group(process: subprocess.Popen[bytes]) -> None:
+        if hasattr(process, "_maestro_owner_pipe"):
+            # TERM the guardian, which owns and drains the target's group.
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
+            return
         if process.poll() is not None:
             return
         try:

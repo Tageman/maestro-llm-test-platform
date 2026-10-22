@@ -99,6 +99,7 @@ export type GeneratedFlowDetail = {
   syntax_attempts: number;
   syntax_repairs: number;
   approved: boolean;
+  approval_method: "automatic" | "manual" | null;
 };
 
 export type RunState =
@@ -141,6 +142,11 @@ export type RunSummary = {
   repair_count: number;
   result_workbook_available: boolean;
   html_report_artifact_id: string | null;
+  recovery_report_artifact_id?: string | null;
+  recovery_snapshot_artifact_id?: string | null;
+  export_status: "pending" | "completed" | "failed" | null;
+  export_path: string | null;
+  export_error: string | null;
 };
 
 export type FailureType =

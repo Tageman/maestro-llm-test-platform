@@ -13,7 +13,7 @@ class RecordingRunner:
         self.calls.append((list(args), timeout_seconds))
         if "--output" in args:
             report_path = Path(args[args.index("--output") + 1])
-            report_path.write_text("<testsuites/>", encoding="utf-8")
+            report_path.write_text('<testsuite tests="1"><testcase status="SUCCESS"/></testsuite>', encoding="utf-8")
         return ProcessResult(0, stdout="OK")
 
 

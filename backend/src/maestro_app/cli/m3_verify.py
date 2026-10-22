@@ -21,6 +21,8 @@ from maestro_app.infrastructure.mcp_diagnostics import MaestroMcpDiagnosticServi
 from maestro_app.infrastructure.pytest_process import ManagedPytestRunner
 from maestro_app.infrastructure.result_workbook import ResultWorkbookWriter
 from maestro_app.infrastructure.run_repository import RunRepository
+from maestro_app.infrastructure.run_exporter import RunExporter
+from maestro_app.infrastructure.execution_guard import RuntimeExecutionGuard
 from maestro_app.infrastructure.workbook_repository import WorkbookRepository
 
 
@@ -40,6 +42,8 @@ def build_service(settings: Settings) -> RunService:
         ),
         syntax_checker=MaestroSyntaxChecker(),
         result_writer=ResultWorkbookWriter(),
+        exporter=RunExporter(Path(__file__).resolve().parents[4]),
+        execution_guard=RuntimeExecutionGuard(settings.runtime_dir),
         background=False,
         maestro_startup_grace_seconds=settings.maestro_startup_grace_seconds,
     )

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import yaml
 from pathlib import Path
 
 from maestro_app.application.ports import PytestPackage, RunRepositoryPort
+from maestro_app.application.startup_policy import explicit_startup_flows
 from maestro_app.domain.enums import FixturePhase
 from maestro_app.domain.fixture_graph import FixtureDependencyResolver
 from maestro_app.domain.models import (
@@ -48,6 +50,9 @@ class GeneratedPytestPackageBuilder:
             if item.enabled and item.case_id in run.selected_case_ids
         }
         resolver = FixtureDependencyResolver(fixtures.values())
+        if resolver.validate():
+            raise ValueError("Fixture dependency graph/scope is invalid")
+        shared = any(fixtures[key].scope.value != "function" for key in flow_paths if key in fixtures)
 
         copied_paths: dict[str, Path] = {}
         for flow_id, source in sorted(flow_paths.items()):
@@ -94,7 +99,7 @@ class GeneratedPytestPackageBuilder:
             if phase == "setup":
                 lines.extend(
                     [
-                        f'    maestro_context.execute("{fixture_id}", entity_type="fixture", phase="setup")',
+                        f'    maestro_context.execute_fixture("{fixture_id}", phase="setup", scope="{fixture.scope.value}")',
                         f'    yield "{fixture_id}"',
                     ]
                 )
@@ -102,18 +107,43 @@ class GeneratedPytestPackageBuilder:
                 lines.extend(
                     [
                         f'    yield "{fixture_id}"',
-                        f'    maestro_context.execute("{fixture_id}", entity_type="fixture", phase="teardown")',
+                        f'    maestro_context.execute_fixture("{fixture_id}", phase="teardown", scope="{fixture.scope.value}")',
                     ]
                 )
 
+        fixture_lines = list(lines)
+        module_lines: dict[str, list[str]] = {}
+        module_files: dict[str, str] = {}
+        case_node_ids: dict[str, str] = {}
+        plans: dict[str, dict] = {}
         node_ids: list[str] = []
-        for case_id, case in cases.items():
+        startup_plans: dict[str, dict] = {}
+        system_flow_id = "SYS-DEFAULT-LAUNCH"
+        while system_flow_id in copied_paths:
+            system_flow_id += "-SYSTEM"
+        for case_id in run.selected_case_ids:
+            case = cases[case_id]
+            if shared:
+                module_files.setdefault(case.module, f"test_module_{len(module_files):03d}.py")
+                lines = module_lines.setdefault(case.module, ["import pytest", "from maestro_app.infrastructure.pytest_runtime import MaestroPytestContext"])
             setup_plan = resolver.resolve(
                 case.pre_fixture_ids, phase=FixturePhase.SETUP
             )
             teardown_plan = resolver.resolve(
                 case.post_fixture_ids, phase=FixturePhase.TEARDOWN
             )
+            explicit = explicit_startup_flows([*setup_plan, case_id], copied_paths)
+            if shared:
+                for flow_id in explicit:
+                    scope = fixtures[flow_id].scope.value if flow_id in fixtures else "function"
+                    if scope == "function" or (scope == "module" and any(fixtures[key].scope.value == "session" for key in flow_paths if key in fixtures)):
+                        raise ValueError("共享作用域不能被 Case/短作用域启动或清状态步骤重置；请将启动夹具提升至最宽作用域")
+            plans[case_id] = {"module": case.module, "fixtures": {key: {"scope": fixtures[key].scope.value, "phase": fixtures[key].phase.value} for key in [*setup_plan, *teardown_plan]}}
+            startup_plans[case_id] = {
+                "origin": "Config.launch_clear_state", "policy": "per_shared_epoch_explicit_startup_wins" if shared else "per_attempt_explicit_startup_wins",
+                "enabled": not explicit, "explicit_flow_ids": explicit,
+                "flow_id": system_flow_id, "clear_state": snapshot.config.launch_clear_state,
+            }
             lifecycle_name = f"lifecycle_{names[case_id]}"
             lines.extend(
                 [
@@ -129,6 +159,7 @@ class GeneratedPytestPackageBuilder:
             # them even when a later setup fixture fails, in reverse request order.
             for fixture_id in teardown_plan:
                 lines.append(f'    request.getfixturevalue("{names[fixture_id]}")')
+            lines.append(f'    maestro_context.bootstrap("{case_id}")')
             for fixture_id in setup_plan:
                 lines.append(f'    request.getfixturevalue("{names[fixture_id]}")')
             lines.extend(
@@ -140,10 +171,23 @@ class GeneratedPytestPackageBuilder:
                     f'    maestro_context.execute("{case_id}", entity_type="case", phase="case", case_id="{case_id}")',
                 ]
             )
-            node_ids.append(
-                f"generated/pytest/test_generated.py::test_{names[case_id]}"
-            )
+            filename = module_files[case.module] if shared else "test_generated.py"
+            case_node_ids[case_id] = f"generated/pytest/{filename}::test_{names[case_id]}"
+            node_ids.append(case_node_ids[case_id])
 
+        if shared and len({tuple(plan["explicit_flow_ids"]) for plan in startup_plans.values()}) > 1:
+            raise ValueError("共享 Run 的所有 Case 必须引用一致的最宽作用域启动夹具，避免中途重启破坏共享状态")
+        if any(plan["enabled"] for plan in startup_plans.values()):
+            header = yaml.safe_dump({"appId": snapshot.config.app_id, "name": system_flow_id}, sort_keys=False)
+            commands = yaml.safe_dump([{"launchApp": {"clearState": snapshot.config.launch_clear_state, "stopApp": True}}], sort_keys=False)
+            copied_paths[system_flow_id] = self.repository.write_text_atomic(
+                run.run_id, "generated/system/default-launch.yaml", header + "---\n" + commands,
+            )
+        if shared:
+            self.repository.write_text_atomic(run.run_id, "generated/pytest/conftest.py", "\n".join(fixture_lines) + "\n")
+            for module, contents in module_lines.items():
+                self.repository.write_text_atomic(run.run_id, "generated/pytest/" + module_files[module], "\n".join(contents) + "\n")
+            lines = ["# Shared-scope cases live in per-module files; see mappings/pytest.json."]
         test_file = self.repository.write_text_atomic(
             run.run_id,
             "generated/pytest/test_generated.py",
@@ -160,6 +204,10 @@ class GeneratedPytestPackageBuilder:
             "source_sha256": snapshot.source_sha256,
             "node_ids": node_ids,
             "python_names": names,
+            "startup_plans": startup_plans,
+            "shared_scopes": shared,
+            "case_node_ids": case_node_ids,
+            "case_plans": plans,
             "flow_paths": {
                 key: str(path.relative_to(root)) for key, path in copied_paths.items()
             },
@@ -170,7 +218,7 @@ class GeneratedPytestPackageBuilder:
         config_path = self.repository.write_json_atomic(
             run.run_id,
             "generated/pytest/runtime.json",
-            {"configured": False, "flow_paths": mapping["flow_paths"]},
+            {"configured": False, "flow_paths": mapping["flow_paths"], "startup_plans": startup_plans, "shared_scopes": shared, "case_plans": plans},
         )
         return PytestPackage(
             test_file=test_file,

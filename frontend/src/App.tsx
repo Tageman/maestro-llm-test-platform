@@ -436,7 +436,7 @@ function App() {
 
           {generation.status === "ready" && (
             <div className="ready-strip">
-              <strong>{generation.mode === "review" ? "REVIEW COMPLETE" : "AUTO APPROVED"}</strong>
+              <strong>APPROVAL COMPLETE</strong>
               <span>
                 {generation.mode === "review"
                   ? "全部 Flow 已确认，可以连接模拟器创建执行 Run。"

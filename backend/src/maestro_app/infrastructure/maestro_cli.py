@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from maestro_app.core.config import Settings
+from maestro_app.infrastructure.maestro_report import report_error
 from maestro_app.infrastructure.tool_probe import (
     CommandRunner,
     ProcessResult,
@@ -19,7 +20,7 @@ class MaestroFlowResult:
 
     @property
     def passed(self) -> bool:
-        return self.process.succeeded and self.report_path.is_file()
+        return self.process.succeeded and report_error(self.report_path) is None
 
 
 class MaestroCliRunner:

@@ -6,6 +6,7 @@ import re
 import threading
 import xml.etree.ElementTree as ET
 from dataclasses import replace
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from uuid import uuid4
 import yaml
 
 from maestro_app.application.errors import ResourceNotFound, StateConflict
+from maestro_app.application.run_recovery import RunRecovery
 from maestro_app.application.failure_classifier import (
     FailureClassification,
     FailureClassifier,
@@ -32,6 +34,7 @@ from maestro_app.application.ports import (
 from maestro_app.domain.enums import (
     CaseRunState,
     FailureType,
+    FlowGenerationStatus,
     GenerationStatus,
     RunState,
     Severity,
@@ -62,6 +65,8 @@ class RunService:
         diagnostic_service: Any | None = None,
         syntax_checker: Any | None = None,
         result_writer: Any | None = None,
+        exporter: Any | None = None,
+        execution_guard: Any | None = None,
         failure_classifier: FailureClassifier | None = None,
         selector_repairer: ControlledYamlSelectorRepairer | None = None,
         background: bool = True,
@@ -76,6 +81,8 @@ class RunService:
         self.diagnostic_service = diagnostic_service
         self.syntax_checker = syntax_checker
         self.result_writer = result_writer
+        self.exporter = exporter
+        self.execution_guard = execution_guard
         self.failure_classifier = failure_classifier or FailureClassifier()
         self.selector_repairer = selector_repairer or ControlledYamlSelectorRepairer()
         self.background = background
@@ -85,12 +92,48 @@ class RunService:
         self._lock = threading.Lock()
 
     def create(self, request: CreateRunRequest) -> RunSummary:
+        lease = self.execution_guard.acquire() if self.execution_guard else None
+        try:
+            if lease:
+                recovery = RunRecovery(self.run_repository)
+                recovery.recover()
+                recovery.assert_execution_allowed()
+            return self._create(request, lease)
+        except BaseException:
+            if lease:
+                lease.close()
+            raise
+
+    def recover_after_restart(self) -> list[str]:
+        if self.execution_guard is None:
+            return []
+        try:
+            lease = self.execution_guard.acquire()
+        except StateConflict:
+            # A live owner/guardian must never be mistaken for a stale Run.
+            return []
+        try:
+            return RunRecovery(self.run_repository).recover()
+        finally:
+            lease.close()
+
+    def _create(self, request: CreateRunRequest, lease=None) -> RunSummary:
         generation = self.generation_repository.get_summary(request.generation_id)
         if generation.status != GenerationStatus.READY:
             raise StateConflict(
                 "GENERATION_NOT_READY",
                 "只有 ready Generation 可以创建 Run",
             )
+        # Check authoritative Flow records as well as the cached summary. Old
+        # unattended approvals with warnings lack proof of manual review.
+        for flow in generation.flows:
+            detail = self.generation_repository.get_flow(generation.generation_id, flow.flow_id)
+            if (
+                not detail.approved or not detail.syntax_valid
+                or detail.status != FlowGenerationStatus.APPROVED
+                or (detail.warnings and detail.approval_method != "manual")
+            ):
+                raise StateConflict("GENERATION_NOT_READY", "Flow 未通过确认门禁；含 warning 的历史生成须重新人工确认")
         snapshot = self.workbook_repository.get(generation.workbook_id)
         if snapshot.config is None or any(
             issue.severity == Severity.ERROR for issue in snapshot.validation_issues
@@ -114,6 +157,10 @@ class RunService:
             )
         if not selected:
             raise StateConflict("CASE_SELECTION_EMPTY", "至少选择一个 Case")
+        required_fixtures = {key for case_id in selected for key in snapshot.fixture_plans.get(case_id, [])}
+        if any(fixture.fixture_id in required_fixtures and fixture.scope.value != "function" for fixture in snapshot.fixtures):
+            modules = list(dict.fromkeys(available[key].module for key in selected))
+            selected = [key for module in modules for key in selected if available[key].module == module]
 
         with self._lock:
             if self._active_run_id is not None:
@@ -139,6 +186,8 @@ class RunService:
                 selected_case_ids=selected,
                 config_snapshot=snapshot.config,
                 app_id=snapshot.config.app_id,
+                export_status="pending" if self.exporter is not None else None,
+                execution_ownership="guarded-v1" if lease else None,
                 case_runs=[
                     CaseRun(
                         case_id=case_id,
@@ -163,19 +212,34 @@ class RunService:
             self._active_run_id = run_id
 
         if self.background:
+            # Build the response before handing the lease to the worker. A
+            # later repository read failure must not release a live worker's
+            # lease through create()'s error path.
+            response = RunSummary.from_run(run)
             worker = threading.Thread(
                 target=self._execute_guarded,
-                args=(run_id, cancel_event),
+                args=(run_id, cancel_event, lease),
                 name=f"run-{run_id}",
                 daemon=True,
             )
             worker.start()
+            return response
         else:
-            self._execute_guarded(run_id, cancel_event)
+            self._execute_guarded(run_id, cancel_event, lease)
         return RunSummary.from_run(self.run_repository.get_run(run_id))
 
     def get(self, run_id: str) -> RunSummary:
-        return RunSummary.from_run(self.run_repository.get_run(run_id))
+        run = self.run_repository.get_run(run_id)
+        if (
+            self.execution_guard is not None
+            and self._active_run_id != run_id
+            and (run.state not in TERMINAL_STATES or run.export_status == "pending")
+        ):
+            # Startup can race with a guardian still draining the former owner.
+            # Retry on normal polling; never recover while its lease is held.
+            self.recover_after_restart()
+            run = self.run_repository.get_run(run_id)
+        return RunSummary.from_run(run)
 
     def get_case(self, run_id: str, case_id: str) -> CaseRunDetail:
         run = self.run_repository.get_run(run_id)
@@ -220,8 +284,16 @@ class RunService:
         return RunSummary.from_run(run)
 
     def _execute_guarded(
-        self, run_id: str, cancel_event: threading.Event
+        self, run_id: str, cancel_event: threading.Event, lease=None
     ) -> None:
+        try:
+            with lease.activate() if lease else nullcontext():
+                self._execute_and_finalize(run_id, cancel_event)
+        finally:
+            if lease:
+                lease.close()
+
+    def _execute_and_finalize(self, run_id: str, cancel_event: threading.Event) -> None:
         try:
             self._execute(run_id, cancel_event)
         except Exception as exc:
@@ -242,10 +314,18 @@ class RunService:
                     )
                     self.run_repository.save_run(run)
         finally:
-            with self._lock:
-                if self._active_run_id == run_id:
-                    self._active_run_id = None
-                self._cancel_events.pop(run_id, None)
+            try:
+                closer = getattr(self.pytest_runner, "close_run", None)
+                if closer:
+                    closer(run_id)
+                interrupted = self.run_repository.get_run(run_id)
+                if interrupted.state in TERMINAL_STATES and interrupted.export_status == "pending":
+                    self._export_run(run_id)
+            finally:
+                with self._lock:
+                    if self._active_run_id == run_id:
+                        self._active_run_id = None
+                    self._cancel_events.pop(run_id, None)
 
     def _execute(self, run_id: str, cancel_event: threading.Event) -> None:
         run = self.run_repository.get_run(run_id)
@@ -315,24 +395,30 @@ class RunService:
 
         run = self._transition(run, RunState.RUNNING, "pytest 开始执行 Maestro Flow")
         root = self.run_repository.run_dir(run_id)
-        whole_run_timeout = (
-            (config.test_timeout_ms / 1000 + self.maestro_startup_grace_seconds)
-            * max(1, len(flow_paths))
-            + 60
-        )
         mapping = json.loads(
             (root / "generated/mappings/pytest.json").read_text(encoding="utf-8")
+        )
+        whole_run_timeout = (
+            (config.test_timeout_ms / 1000 + self.maestro_startup_grace_seconds)
+            * max(1, len(mapping["flow_paths"]))
+            + 60
         )
         python_names = mapping["python_names"]
         results: list[dict[str, Any]] = []
 
         for case_id in run.selected_case_ids:
-            node_id = (
+            if cancel_event.is_set():
+                break
+            node_id = mapping.get("case_node_ids", {}).get(case_id) or (
                 "generated/pytest/test_generated.py::test_"
                 + python_names[case_id]
             )
             ordinal = 1
             while ordinal <= config.max_total_run_attempts:
+                # Cancellation can arrive while diagnosing a previous Attempt.
+                # Never start another external execution once it is requested.
+                if cancel_event.is_set():
+                    break
                 attempt_package = self._attempt_package(
                     package, root, case_id, ordinal, node_id
                 )
@@ -414,7 +500,9 @@ class RunService:
                         "output_path": str(result.output_path.relative_to(root)),
                     }
                 )
-                if result.cancelled or cancel_event.is_set():
+                if result.cancelled:
+                    cancel_event.set()
+                if cancel_event.is_set():
                     break
                 if attempt.state == CaseRunState.PASSED:
                     break
@@ -440,7 +528,29 @@ class RunService:
                 ordinal += 1
             if cancel_event.is_set():
                 break
+            run = self.run_repository.get_run(run_id)
+            if (
+                not config.continue_on_failure
+                and self._case(run, case_id).state != CaseRunState.PASSED
+            ):
+                # The runner has returned only after pytest has finalized its
+                # fixtures, and the inner loop has exhausted allowed repair.
+                # Do not cancel the current lifecycle to implement fail-fast.
+                self._mark_unrun_cases(
+                    run_id,
+                    reason="continue_on_failure_false",
+                    message=f"{case_id} 最终未通过；continue_on_failure=false，未执行后续 Case",
+                    blocked_by_case_id=case_id,
+                )
+                break
 
+        self._finish_shared_scopes(run_id)
+        if cancel_event.is_set():
+            self._mark_unrun_cases(
+                run_id,
+                reason="cancelled",
+                message="Run 已取消，未执行后续 Case",
+            )
         run = self.run_repository.get_run(run_id)
         run = self._transition(run, RunState.FINALIZING, "聚合 pytest 与 Maestro 结果")
         if config.result_writeback and self.result_writer is not None:
@@ -449,6 +559,7 @@ class RunService:
                 result_dir=root / "result",
                 snapshot=snapshot,
                 run=run,
+                run_dir=root,
             )
             relative_result = str(workbook_evidence.path.relative_to(root))
             run = run.model_copy(
@@ -466,6 +577,8 @@ class RunService:
                     "source_sha256_after": workbook_evidence.source_sha256_after,
                     "output_sha256": workbook_evidence.output_sha256,
                     "verified_rows": workbook_evidence.verified_rows,
+                    "verified_fixture_rows": workbook_evidence.verified_fixture_rows,
+                    "fixture_execution_counts": workbook_evidence.fixture_execution_counts,
                     "relative_path": relative_result,
                 },
             )
@@ -507,11 +620,136 @@ class RunService:
             kind="summary",
             media_type="application/json",
         )
+        self._export_run(run_id)
+
+    def _finish_shared_scopes(self, run_id: str) -> None:
+        closer = getattr(self.pytest_runner, "close_run", None)
+        closed = closer(run_id) if closer else None
+        root = self.run_repository.run_dir(run_id)
+        if closed:
+            package, result = closed
+            self._publish_trace(run_id, package, 0)
+            for path in sorted((root / "shared-finalization").rglob("*")):
+                if path.is_file():
+                    self.run_repository.register_artifact(run_id, str(path.relative_to(root)), kind="trace" if path.name == "flow-trace.jsonl" else "shared_finalization", media_type="application/x-ndjson" if path.suffix == ".jsonl" else "text/plain")
+            for relative in ["shared-worker/worker.log", "reports/shared-suite.xml"]:
+                if (root / relative).is_file():
+                    self.run_repository.register_artifact(run_id, relative, kind="shared_finalization", media_type="application/xml" if relative.endswith(".xml") else "text/plain")
+        run = self.run_repository.get_run(run_id)
+        failed: dict[str, list[str]] = {}
+        for artifact in run.artifacts:
+            if artifact.kind != "trace":
+                continue
+            for event in self._read_traces(root / artifact.relative_path):
+                if event.get("event") == "finished" and event.get("phase") == "teardown" and event.get("succeeded") is False and event.get("fixture_scope") in {"module", "session"}:
+                    for case_id in event.get("affected_case_ids", []):
+                        failed.setdefault(case_id, []).append(artifact.artifact_id)
+        cleanup_unknown = bool(closed and not closed[1].succeeded and not failed)
+        if cleanup_unknown:
+            evidence = [artifact.artifact_id for artifact in run.artifacts if artifact.kind == "shared_finalization"]
+            failed = {case.case_id: evidence for case in run.case_runs if case.attempts}
+        if failed:
+            cases = []
+            for case in run.case_runs:
+                if case.case_id in failed and case.attempts:
+                    latest = case.attempts[-1].model_copy(update={"state": CaseRunState.FIXTURE_FAILED, "failure_type": FailureType.FIXTURE, "failure_reason": "共享清理中断，结果未知" if cleanup_unknown else "共享后置 Fixture 失败，影响该作用域消费者", "artifact_ids": list(dict.fromkeys([*case.attempts[-1].artifact_ids, *failed[case.case_id]]))})
+                    case = case.model_copy(update={"state": CaseRunState.FIXTURE_FAILED, "cleanup_result": "unknown" if cleanup_unknown else "failed", "attempts": [*case.attempts[:-1], latest]})
+                elif case.cleanup_result == "pending":
+                    case = case.model_copy(update={"cleanup_result": "passed"})
+                cases.append(case)
+            run = run.model_copy(update={"case_runs": cases})
+            self.run_repository.save_run(run)
+            self.run_repository.append_event(run, event_type="fixture.shared_cleanup_failed", entity_type="run", entity_id=run_id, state=run.state.value, message="共享清理失败已回溯到受影响 Case", data={"case_ids": list(failed)})
+        elif closed:
+            self.run_repository.save_run(run.model_copy(update={"case_runs": [case.model_copy(update={"cleanup_result": "passed"}) if case.cleanup_result == "pending" else case for case in run.case_runs]}))
+
+    def _export_run(self, run_id: str) -> None:
+        if self.exporter is None:
+            return
+        run = self.run_repository.get_run(run_id)
+        root = self.run_repository.run_dir(run_id)
+        try:
+            target = self.exporter.destination(root, run.config_snapshot.output_dir)
+            delivered = run.model_copy(update={
+                "export_status": "completed", "export_path": str(target), "export_error": None,
+            })
+            self.exporter.export(root, run.config_snapshot.output_dir, delivered.model_dump(mode="json"))
+            self.run_repository.save_run(delivered)
+            self.run_repository.append_event(
+                delivered, event_type="run.export_completed", entity_type="run", entity_id=run_id,
+                state=run.state.value, message="结果与证据已导出", data={"path": str(target)},
+            )
+        except Exception as exc:
+            failed = run.model_copy(update={"export_status": "failed", "export_error": str(exc)})
+            self.run_repository.save_run(failed)
+            self.run_repository.append_event(
+                failed, event_type="run.export_failed", entity_type="run", entity_id=run_id,
+                state=run.state.value, message="结果导出失败，runtime 原始证据已保留", data={"error": str(exc)},
+            )
+
+    def _mark_unrun_cases(
+        self,
+        run_id: str,
+        *,
+        reason: str,
+        message: str,
+        blocked_by_case_id: str | None = None,
+    ) -> Run:
+        """Record skipped work without inventing an execution Attempt."""
+        run = self.run_repository.get_run(run_id)
+        pending_ids = {
+            case.case_id
+            for case in run.case_runs
+            if case.state == CaseRunState.PENDING and not case.attempts
+        }
+        if not pending_ids:
+            return run
+        now = datetime.now(UTC)
+        run = run.model_copy(
+            update={
+                "case_runs": [
+                    case.model_copy(
+                        update={
+                            "state": CaseRunState.BLOCKED,
+                            "business_result": "not_run",
+                            "cleanup_result": "not_required",
+                            "ended_at": now,
+                        }
+                    )
+                    if case.case_id in pending_ids
+                    else case
+                    for case in run.case_runs
+                ],
+                "updated_at": now,
+            }
+        )
+        self.run_repository.save_run(run)
+        for case in run.case_runs:
+            if case.case_id in pending_ids:
+                run, _ = self.run_repository.append_event(
+                    run,
+                    event_type="case.not_run",
+                    entity_type="case",
+                    entity_id=case.case_id,
+                    state=CaseRunState.BLOCKED.value,
+                    message=message,
+                    data={
+                        "reason": reason,
+                        "blocked_by_case_id": blocked_by_case_id,
+                        "attempt_count": 0,
+                    },
+                )
+        return run
 
     def _write_html_report(self, run: Run) -> Path:
         def escaped(value: object | None) -> str:
             return html.escape("—" if value is None else str(value))
 
+        not_run_reasons = {
+            event.entity_id: event.message
+            for event in self.run_repository.list_events(run.run_id)
+            if event.type == "case.not_run"
+        }
         case_sections: list[str] = []
         for case in run.case_runs:
             attempts = "".join(
@@ -531,9 +769,15 @@ class RunService:
                 "</li>"
                 for item in repairs
             ) or "<li>无自动修复</li>"
+            not_run_note = (
+                f"<p>{escaped(not_run_reasons[case.case_id])}</p>"
+                if case.case_id in not_run_reasons
+                else ""
+            )
             case_sections.append(
                 "<section>"
                 f"<h2>{escaped(case.case_id)} <span>{escaped(case.state.value)}</span></h2>"
+                f"{not_run_note}"
                 "<table><thead><tr><th>尝试</th><th>状态</th><th>失败类型</th>"
                 "<th>失败步骤</th><th>Selector</th><th>退出码</th><th>证据数</th>"
                 f"</tr></thead><tbody>{attempts}</tbody></table>"
@@ -857,8 +1101,13 @@ a{{color:#106246}}.meta{{display:flex;gap:24px;flex-wrap:wrap}}.meta b{{display:
             return position
         with package.trace_path.open(encoding="utf-8") as source:
             source.seek(position)
-            lines = source.readlines()
-            new_position = source.tell()
+            lines = []
+            new_position = position
+            while line := source.readline():
+                if not line.endswith("\n"):
+                    break
+                lines.append(line)
+                new_position = source.tell()
         run = self.run_repository.get_run(run_id)
         for line in lines:
             payload = json.loads(line)
@@ -907,7 +1156,7 @@ a{{color:#106246}}.meta{{display:flex;gap:24px;flex-wrap:wrap}}.meta b{{display:
                     event
                     for event in related
                     if event.get("phase") == "setup"
-                    and event.get("event") == "finished"
+                    and event.get("event") in {"finished", "dependency_failed"}
                     and not event.get("succeeded")
                 ),
                 None,
@@ -1001,10 +1250,10 @@ a{{color:#106246}}.meta{{display:flex;gap:24px;flex-wrap:wrap}}.meta b{{display:
                     update={
                         "state": state,
                         "business_result": (
-                            "passed" if state == CaseRunState.PASSED else "failed"
+                            "passed" if case_finish and case_finish.get("succeeded") else "failed"
                         ),
                         "cleanup_result": (
-                            "failed" if teardown_failures else "passed"
+                            "failed" if teardown_failures else "pending" if package.config_path.is_file() and json.loads(package.config_path.read_text()).get("shared_scopes") else "passed"
                         ),
                         "started_at": started_at,
                         "ended_at": ended_at,
@@ -1108,11 +1357,11 @@ a{{color:#106246}}.meta{{display:flex;gap:24px;flex-wrap:wrap}}.meta b{{display:
         package: PytestPackage, output: str
     ) -> list[str]:
         root = package.test_file.parents[2]
-        expected_file = str(package.test_file.relative_to(root))
+        expected_files = {node.split("::", 1)[0] for node in package.node_ids} or {str(package.test_file.relative_to(root))}
         collected: list[str] = []
         for line in output.splitlines():
             value = line.strip()
-            if value.startswith(expected_file + "::"):
+            if any(value.startswith(filename + "::") for filename in expected_files):
                 collected.append(value)
         return collected
 

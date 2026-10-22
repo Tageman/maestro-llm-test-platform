@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -232,6 +233,10 @@ class Run(DomainModel):
     events_cursor: int = Field(default=0, ge=0)
     cancel_requested: bool = False
     terminal_reason: str | None = None
+    export_status: Literal["pending", "completed", "failed"] | None = None
+    export_path: str | None = None
+    export_error: str | None = None
+    execution_ownership: Literal["guarded-v1"] | None = None
 
 
 class RunEvent(DomainModel):
@@ -360,6 +365,7 @@ class GeneratedFlowDetail(DomainModel):
     syntax_attempts: int = Field(default=1, ge=1)
     syntax_repairs: int = Field(default=0, ge=0)
     approved: bool = False
+    approval_method: Literal["automatic", "manual"] | None = None
 
 
 class GenerationFlowSummary(DomainModel):
@@ -431,6 +437,11 @@ class RunSummary(DomainModel):
     repair_count: int = Field(default=0, ge=0)
     result_workbook_available: bool = False
     html_report_artifact_id: str | None = None
+    recovery_report_artifact_id: str | None = None
+    recovery_snapshot_artifact_id: str | None = None
+    export_status: Literal["pending", "completed", "failed"] | None = None
+    export_path: str | None = None
+    export_error: str | None = None
 
     @classmethod
     def from_run(cls, run: Run) -> "RunSummary":
@@ -456,10 +467,19 @@ class RunSummary(DomainModel):
             events_cursor=run.events_cursor,
             cancel_requested=run.cancel_requested,
             terminal_reason=run.terminal_reason,
+            export_status=run.export_status,
+            export_path=run.export_path,
+            export_error=run.export_error,
             repair_count=len(run.repairs),
             result_workbook_available=bool(run.result_workbook_path),
             html_report_artifact_id=next(
                 (item.artifact_id for item in run.artifacts if item.kind == "html_report"),
                 None,
+            ),
+            recovery_report_artifact_id=next(
+                (item.artifact_id for item in run.artifacts if item.kind == "recovery_report"), None,
+            ),
+            recovery_snapshot_artifact_id=next(
+                (item.artifact_id for item in run.artifacts if item.kind == "recovery_snapshot"), None,
             ),
         )

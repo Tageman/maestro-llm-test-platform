@@ -4,8 +4,8 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 版本 | V1.0 |
-| 状态 | Frozen |
+| 版本 | V1.3 实施修订 |
+| 状态 | V1.0 基线保留；本次兼容修订已实施，尚未完成发布验收 |
 | 冻结日期 | 2026-09-16 |
 | 需求基线 | `Maestro_pytest_LLM_APP自动化测试_正式需求文档_V1.0.md` |
 | 研发计划 | `Maestro_pytest_LLM_APP自动化测试_一期研发任务与里程碑_V1.0.md` |
@@ -13,6 +13,8 @@
 | 一期运行环境 | macOS、本地 Web、Android Studio 模拟器、Maestro CLI 2.10.0 |
 
 本文档冻结一期的领域模型、目录结构、Flow IR、运行状态机和前后端接口。修改 Frozen 内容必须更新版本、影响分析和验收映射。
+
+2026-10-19 配置/交付、2026-10-20 恢复及 2026-10-21 共享 Fixture 修订影响与验收映射见 [M4 实施记录](m4-implementation-status.md)、[重启恢复设计](m4-recovery-design.md)和[共享作用域设计](m4-shared-fixtures-design.md)。保留 Flow IR 1.0、REST API 1.2 和运行状态图；实现真实跨 Case module/session 生命周期、重试轮次重建及共享清理失败回溯。共享包增加 conftest、按 Case 模块分组的测试文件及文件请求/响应协议；纯 function 包兼容原执行路径。cleanup_result 可表达 pending/unknown，不新增顶层运行状态。各发布门禁仍须凭当前版本证据签收，技术修订不等于发布通过。
 
 ## 1. 设计目标
 
@@ -264,7 +266,7 @@ ValidationIssue 必须包含：
 - `field`
 - `suggestion`
 
-任何 `error` 阻止生成；`warning` 在人工预览模式要求确认，在无人值守模式记录后继续，除非对应规则明确要求阻断。
+任何 `error` 阻止生成。按后续已冻结的 M4-AC-01 门禁，含 `warning` 的 Flow 在两种模式下均需人工确认；不能仅因语法通过自动批准。`approval_method=manual` 记录确认来源；旧版带 warning 且无人工确认来源的批准需重新复核。本条覆盖 V1.0“无人值守记录后继续”的旧文字，保留 warning 证据与原请求模式。
 
 ## 7. Flow IR V1
 
@@ -364,6 +366,7 @@ CREATED
 - Run 终态不可再次进入运行态；重新运行必须创建新 Run。
 - 浏览器关闭不改变 Run 状态。
 - 后端重启时读取 `run.json`：终态保持；非终态转入恢复检查，不自动重放外部操作。
+- V1.2 恢复实现：Web 启动、新建 Run 前及恢复延迟后的状态查询取得 runtime 文件锁；工作进程守护共享锁至清理结束。非终态按现有状态图安全终止，导出 pending 独立标记失败，保留恢复前快照和哈希报告。旧版所有权不明记录阻断新执行，须人工核查后明确确认。详见恢复设计；内部 Run 新增可选 `execution_ownership=guarded-v1`，REST RunSummary 增量加入可空的恢复报告/快照 Artifact ID，状态图不变。
 - 执行前取消可直接进入 `CANCELLED`。执行开始后的取消只设置 `cancel_requested`，停止当前子进程后进入 `FINALIZING`；已建立的清理义务完成后才进入 `CANCELLED`。
 
 ### 8.4 CaseRunState

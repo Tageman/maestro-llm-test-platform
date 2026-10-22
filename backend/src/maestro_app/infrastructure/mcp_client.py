@@ -8,6 +8,8 @@ from collections import deque
 from collections.abc import Mapping
 from typing import Any, Protocol, Sequence
 
+from maestro_app.infrastructure.owned_process import finish_owned, popen_owned
+
 
 class MaestroMcpError(RuntimeError):
     pass
@@ -40,7 +42,7 @@ class StdioJsonRpcTransport:
         if self._process is not None and self._process.poll() is None:
             return
         try:
-            self._process = subprocess.Popen(
+            self._process = popen_owned(
                 list(self.command),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -89,13 +91,7 @@ class StdioJsonRpcTransport:
                 process.stdin.close()
             except OSError:
                 pass
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+        finish_owned(process)
 
     def _read_stdout(self) -> None:
         process = self._process

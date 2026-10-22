@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -18,12 +20,14 @@ from maestro_app.application.workbook_service import WorkbookService
 from maestro_app.application.yaml_compiler import FlowYamlCompiler
 from maestro_app.core.config import Settings, get_settings
 from maestro_app.infrastructure.excel_importer import ExcelWorkbookImporter
+from maestro_app.infrastructure.execution_guard import RuntimeExecutionGuard
 from maestro_app.infrastructure.device_manager import AndroidDeviceManager
 from maestro_app.infrastructure.generation_repository import GenerationRepository
 from maestro_app.infrastructure.pytest_process import ManagedPytestRunner
 from maestro_app.infrastructure.mcp_diagnostics import MaestroMcpDiagnosticService
 from maestro_app.infrastructure.result_workbook import ResultWorkbookWriter
 from maestro_app.infrastructure.run_repository import RunRepository
+from maestro_app.infrastructure.run_exporter import RunExporter
 from maestro_app.infrastructure.tool_probe import SystemCapabilityService
 from maestro_app.infrastructure.workbook_repository import WorkbookRepository
 
@@ -36,10 +40,17 @@ def create_app(
     run_service: RunService | None = None,
 ) -> FastAPI:
     active_settings = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(application):
+        application.state.run_service.recover_after_restart()
+        yield
+
     app = FastAPI(
         title="Maestro LLM Test Platform API",
         version=__version__,
         description="Local Android automation orchestration API.",
+        lifespan=lifespan,
     )
     app.state.settings = active_settings
     app.state.capability_service = capability_service or SystemCapabilityService(
@@ -72,6 +83,8 @@ def create_app(
         ),
         syntax_checker=MaestroSyntaxChecker(),
         result_writer=ResultWorkbookWriter(),
+        exporter=RunExporter(Path(__file__).resolve().parents[3]),
+        execution_guard=RuntimeExecutionGuard(active_settings.runtime_dir),
         maestro_startup_grace_seconds=active_settings.maestro_startup_grace_seconds,
     )
 

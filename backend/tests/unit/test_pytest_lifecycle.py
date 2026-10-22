@@ -96,7 +96,7 @@ args = sys.argv[1:]
 report = pathlib.Path(args[args.index('--output') + 1])
 flow = pathlib.Path(args[-1])
 report.parent.mkdir(parents=True, exist_ok=True)
-report.write_text('<testsuite tests="1" failures="0"/>', encoding='utf-8')
+report.write_text('<testsuite tests="1" failures="0"><testcase status="SUCCESS"/></testsuite>', encoding='utf-8')
 if 'FAIL' in flow.read_text(encoding='utf-8'):
     print('injected failure for', flow.name)
     raise SystemExit(7)
@@ -108,9 +108,9 @@ print('passed', flow.name)
     return path
 
 
-def _package(tmp_path: Path, failing_flow: str | None):
+def _package(tmp_path: Path, failing_flow: str | None, *, clear_state=False, explicit_startup=False):
     maestro = _fake_maestro(tmp_path / "fake-maestro")
-    config = _config(maestro)
+    config = _config(maestro).model_copy(update={"launch_clear_state": clear_state})
     fixtures = [
         _fixture("FX-RESET", FixturePhase.SETUP, 10),
         _fixture("FX-LOGIN", FixturePhase.SETUP, 20, ["FX-RESET"]),
@@ -152,6 +152,8 @@ def _package(tmp_path: Path, failing_flow: str | None):
     for flow_id in [fixture.fixture_id for fixture in fixtures] + [case.case_id]:
         path = tmp_path / f"{flow_id}.yaml"
         path.write_text("FAIL" if flow_id == failing_flow else "PASS", encoding="utf-8")
+        if explicit_startup and flow_id == "FX-RESET":
+            path.write_text("appId: example.app\n---\n- launchApp:\n    clearState: false\n")
         flow_paths[flow_id] = path
     run = Run(
         run_id=f"run-{failing_flow or 'success'}",
@@ -235,4 +237,39 @@ def test_generated_pytest_lifecycle(
     assert collection.succeeded
     assert package.node_ids[0] in collection.stdout_tail
     assert result.returncode == returncode
-    assert _finished(package) == expected
+    assert _finished(package) == ["SYS-DEFAULT-LAUNCH", *expected]
+
+
+@pytest.mark.parametrize("clear_state", [True, False])
+@pytest.mark.parametrize("explicit_startup", [True, False])
+def test_global_startup_policy_preserves_explicit_fixture(tmp_path, clear_state, explicit_startup):
+    import yaml
+    package = _package(tmp_path, None, clear_state=clear_state, explicit_startup=explicit_startup)
+    config = json.loads(package.config_path.read_text())
+    plan = config["startup_plans"]["TC-HOME-001"]
+    assert plan["enabled"] is not explicit_startup
+    assert plan["clear_state"] is clear_state
+    root = package.test_file.parents[2]
+    if explicit_startup:
+        assert plan["explicit_flow_ids"] == ["FX-RESET"]
+        assert not (root / "generated/system/default-launch.yaml").exists()
+        explicit = list(yaml.safe_load_all((root / "generated/fixtures/FX-RESET.yaml").read_text()))
+        assert explicit[1][0]["launchApp"]["clearState"] is False
+    else:
+        generated = list(yaml.safe_load_all((root / "generated/system/default-launch.yaml").read_text()))
+        assert generated[1][0]["launchApp"]["clearState"] is clear_state
+    result = ManagedPytestRunner(_settings(tmp_path)).run(
+        root.name, package, timeout_seconds=30, cancel_event=threading.Event(),
+    )
+    assert result.succeeded
+    assert _finished(package).count("SYS-DEFAULT-LAUNCH") == (0 if explicit_startup else 1)
+
+
+def test_global_startup_failure_still_runs_registered_cleanup(tmp_path):
+    package = _package(tmp_path, None)
+    (package.test_file.parents[2] / "generated/system/default-launch.yaml").write_text("FAIL")
+    result = ManagedPytestRunner(_settings(tmp_path)).run(
+        "run-success", package, timeout_seconds=30, cancel_event=threading.Event(),
+    )
+    assert not result.succeeded
+    assert _finished(package) == ["SYS-DEFAULT-LAUNCH", "FX-POST-B", "FX-POST-A"]

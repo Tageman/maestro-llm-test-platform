@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Maestro LLM Test Platform API
-  version: 1.0.0
-  description: Frozen V1 contract for the local Android automation platform.
+  version: 1.2.0
+  description: Additive approval, delivery and recovery-artifact links; see docs/m4-implementation-status.md.
 servers:
   - url: http://127.0.0.1:8000
     description: Local backend
@@ -543,6 +543,7 @@ components:
         syntax_attempts: { type: integer, minimum: 1 }
         syntax_repairs: { type: integer, minimum: 0 }
         approved: { type: boolean }
+        approval_method: { enum: [automatic, manual, null] }
     ApprovalRequest:
       type: object
       additionalProperties: false
@@ -623,6 +624,11 @@ components:
         repair_count: { type: integer, minimum: 0 }
         result_workbook_available: { type: boolean }
         html_report_artifact_id: { type: [string, "null"] }
+        recovery_report_artifact_id: { type: [string, "null"] }
+        recovery_snapshot_artifact_id: { type: [string, "null"] }
+        export_status: { enum: [pending, completed, failed, null] }
+        export_path: { type: [string, "null"] }
+        export_error: { type: [string, "null"] }
         case_counts:
           type: object
           additionalProperties:
@@ -657,7 +663,9 @@ components:
           items:
             $ref: "#/components/schemas/Artifact"
         business_result: { type: [string, "null"] }
-        cleanup_result: { type: [string, "null"] }
+        cleanup_result:
+          type: [string, "null"]
+          description: "passed/failed 为已确认清理结果；pending 表示共享作用域尚未收口；unknown 表示进程中断等导致无法确认；not_required 表示未执行用例且未建立清理义务。不得把 pending/unknown 展示为清理成功。"
         started_at: { type: [string, "null"], format: date-time }
         ended_at: { type: [string, "null"], format: date-time }
         duration_seconds: { type: [number, "null"], minimum: 0 }

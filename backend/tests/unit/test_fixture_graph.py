@@ -39,3 +39,11 @@ def test_same_level_uses_order_then_id() -> None:
         "FX-A",
         "FX-B",
     ]
+
+
+def test_wider_scope_cannot_depend_on_shorter_scope():
+    parent = _fixture("S", 20, ["F"]).model_copy(update={"scope": FixtureScope.SESSION})
+    assert "FIXTURE_DEPENDENCY_SCOPE_MISMATCH" in {issue.code for issue in FixtureDependencyResolver([parent, _fixture("F", 10)]).validate()}
+    child = _fixture("F", 20, ["S"])
+    parent = parent.model_copy(update={"dependency_ids": []})
+    assert not FixtureDependencyResolver([parent, child]).validate()

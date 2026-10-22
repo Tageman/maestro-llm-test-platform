@@ -48,7 +48,7 @@ export function RunConsole({ generation, initialRunId, onError }: Props) {
   }, [initialRunId, onError]);
 
   useEffect(() => {
-    if (!run || terminalStates.has(run.state)) return undefined;
+    if (!run || (terminalStates.has(run.state) && run.export_status !== "pending")) return undefined;
     const timer = window.setInterval(() => {
       void getRun(run.run_id).then(setRun).catch((caught: unknown) =>
         onError(caught instanceof Error ? caught.message : "读取 Run 失败"),
@@ -138,6 +138,9 @@ export function RunConsole({ generation, initialRunId, onError }: Props) {
             <div><dt>REPAIRS</dt><dd>{run.repair_count}</dd></div>
           </dl>
           {run.terminal_reason && <p className="run-reason">{run.terminal_reason}</p>}
+          {run.export_status === "pending" && <p className="run-reason">结果与证据正在导出……</p>}
+          {run.export_status === "completed" && <p className="run-reason">已导出：{run.export_path}</p>}
+          {run.export_status === "failed" && <p role="alert" className="run-reason">交付导出失败：{run.export_error}。测试执行结果未改变，runtime 原始证据仍可下载。</p>}
           {!terminalStates.has(run.state) && (
             <button className="run-cancel" type="button" disabled={busy} onClick={() => void cancel()}>
               安全终止
@@ -153,6 +156,16 @@ export function RunConsole({ generation, initialRunId, onError }: Props) {
               <h3>尝试、修复与产物</h3>
             </div>
             <div className="result-links">
+              {run.recovery_report_artifact_id && (
+                <a className="result-download" href={artifactUrl(run.run_id, run.recovery_report_artifact_id)}>
+                  下载恢复报告 <span>↓</span>
+                </a>
+              )}
+              {run.recovery_snapshot_artifact_id && (
+                <a className="result-download" href={artifactUrl(run.run_id, run.recovery_snapshot_artifact_id)}>
+                  下载恢复前快照 <span>↓</span>
+                </a>
+              )}
               {run.html_report_artifact_id && (
                 <a className="result-download" href={artifactUrl(run.run_id, run.html_report_artifact_id)}>
                   下载 HTML 报告 <span>↓</span>

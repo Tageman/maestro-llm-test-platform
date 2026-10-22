@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 from maestro_app.core.config import Settings
+from maestro_app.infrastructure.owned_process import run_owned
 from maestro_app.domain.enums import OverallStatus, ToolStatus
 from maestro_app.domain.models import (
     AndroidDevice,
@@ -39,14 +40,7 @@ class CommandRunner(Protocol):
 class SubprocessCommandRunner:
     def run(self, args: Sequence[str], timeout_seconds: float) -> ProcessResult:
         try:
-            completed = subprocess.run(
-                list(args),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
-            )
+            completed = run_owned(list(args), timeout=timeout_seconds)
             return ProcessResult(
                 returncode=completed.returncode,
                 stdout=completed.stdout.strip(),

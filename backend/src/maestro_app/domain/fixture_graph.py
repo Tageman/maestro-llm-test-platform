@@ -47,6 +47,8 @@ class FixtureDependencyResolver:
                             f"夹具 {fixture.fixture_id} 与依赖 {dependency_id} 的阶段不一致",
                         )
                     )
+                elif {"function": 0, "module": 1, "session": 2}[dependency.scope.value] < {"function": 0, "module": 1, "session": 2}[fixture.scope.value]:
+                    issues.append(self._issue("FIXTURE_DEPENDENCY_SCOPE_MISMATCH", fixture, f"{fixture.scope.value} 夹具不能依赖更短的 {dependency.scope.value} 作用域：{dependency_id}"))
 
         cycle = self._find_cycle()
         if cycle:
